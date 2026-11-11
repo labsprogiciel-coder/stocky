@@ -55,6 +55,9 @@
           "origin": "https://rork.app/"
         }
       ],
+      "expo-secure-store",
+      "expo-font",
+      "expo-web-browser",
       [
         "expo-camera",
         {
@@ -65,6 +68,14 @@
         "expo-location",
         {
           "locationWhenInUsePermission": "Autoriser stockly à accéder à votre localisation pour enregistrer la position du TPE et faciliter son suivi."
+        }
+      ],
+      [
+        "@sentry/react-native/expo",
+        {
+          "url": "https://de.sentry.io/",
+          "organization": "progiciel-labs",
+          "project": "stockly-app"
         }
       ]
     ],
