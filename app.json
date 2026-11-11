@@ -84,7 +84,7 @@
     },
     "extra": {
       "eas": {
-        "projectId": "7c94c735-90d6-4252-a3c8-736389e1cd8e
+        "projectId": "7c94c735-90d6-4252-a3c8-736389e1cd8e"
       }
     },
     "owner": "labo-progiciel",
@@ -92,7 +92,7 @@
       "policy": "fingerprint"
     },
     "updates": {
-      "url": "https://u.expo.dev/7c94c735-90d6-4252-a3c8-736389e1cd8e
+      "url": "https://u.expo.dev/7c94c735-90d6-4252-a3c8-736389e1cd8e"
     }
   }
 }
