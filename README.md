@@ -71,4 +71,4 @@ npx expo config --json > /dev/null   # vérification rapide
 - Mode hors ligne et file de synchronisation.
 - Remplacer les icônes provisoires de `assets/images/` par les visuels définitifs.
 - Le code-barres affiché sur la fiche détail est décoratif ; utilisez `react-native-svg` avec une bibliothèque de codes-barres pour un vrai rendu.
-- Sentry : réinstaller `@sentry/react-native` (`npx expo install @sentry/react-native`) puis remettre son plugin dans `app.json` si le suivi des erreurs est souhaité.
+- Sentry : `@sentry/react-native` et son plugin sont installés, mais le SDK n'est pas encore initialisé. Ajoutez `Sentry.init({ dsn: '…' })` dans `app/_layout.tsx`, un `metro.config.js` basé sur `getSentryExpoConfig`, et le secret `SENTRY_AUTH_TOKEN` dans EAS pour l'envoi des source maps.
