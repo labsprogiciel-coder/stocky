@@ -1,0 +1,31 @@
+{
+  "expo": {
+    "name": "Stockly",
+    "slug": "stockly-mobile",
+    "scheme": "stockly",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.example.stockly"
+    },
+    "android": {
+      "package": "com.example.stockly"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Stockly utilise la caméra pour scanner les codes-barres."
+        }
+      ],
+      "expo-splash-screen",
+      "expo-status-bar"
+    ],
+    "experiments": {
+      "typedRoutes": false
+    }
+  }
+}
