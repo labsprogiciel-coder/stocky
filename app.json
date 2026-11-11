@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "Mizo",
-    "slug": "tonti-app",
+    "name": "stockly",
+    "slug": "stockly-app",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "kauridoor",
+    "scheme": "stockly",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
@@ -15,11 +15,11 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "app.tontipro.app",
+      "bundleIdentifier": "app.stockly.app",
       "infoPlist": {
-        "NSCameraUsageDescription": "Autoriser Mizo à accéder à la caméra pour scanner les QR codes d'enregistrement des TPE.",
-        "NSLocationWhenInUseUsageDescription": "Autoriser Mizo à accéder à votre localisation pour enregistrer la position du TPE et faciliter son suivi.",
-        "NSLocationAlwaysAndWhenInUseUsageDescription": "Autoriser Mizo à accéder à votre localisation pour enregistrer la position du TPE."
+        "NSCameraUsageDescription": "Autoriser stockly à accéder à la caméra pour scanner les QR codes d'enregistrement des TPE.",
+        "NSLocationWhenInUseUsageDescription": "Autoriser stockly à accéder à votre localisation pour enregistrer la position du TPE et faciliter son suivi.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Autoriser stockly à accéder à votre localisation pour enregistrer la position du TPE."
       },
       "entitlements": {
         "com": {
@@ -38,7 +38,7 @@
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#D85A30"
       },
-      "package": "com.tontipro.app",
+      "package": "com.stockly.app",
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.ACCESS_FINE_LOCATION",
@@ -61,13 +61,13 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Autoriser Mizo à accéder à la caméra pour scanner les QR codes d'enregistrement des TPE."
+          "cameraPermission": "Autoriser stockly à accéder à la caméra pour scanner les QR codes d'enregistrement des TPE."
         }
       ],
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "Autoriser Mizo à accéder à votre localisation pour enregistrer la position du TPE et faciliter son suivi."
+          "locationWhenInUsePermission": "Autoriser stockly à accéder à votre localisation pour enregistrer la position du TPE et faciliter son suivi."
         }
       ],
       [
@@ -75,7 +75,7 @@
         {
           "url": "https://de.sentry.io/",
           "organization": "progiciel-labs",
-          "project": "mizo-app"
+          "project": "stockly-app"
         }
       ]
     ],
@@ -84,7 +84,7 @@
     },
     "extra": {
       "eas": {
-        "projectId": "7501fec2-3ee8-4253-8aa4-2cdfe04f58c0"
+        "projectId": "7c94c735-90d6-4252-a3c8-736389e1cd8e
       }
     },
     "owner": "labo-progiciel",
@@ -92,7 +92,7 @@
       "policy": "fingerprint"
     },
     "updates": {
-      "url": "https://u.expo.dev/7501fec2-3ee8-4253-8aa4-2cdfe04f58c0"
+      "url": "https://u.expo.dev/7c94c735-90d6-4252-a3c8-736389e1cd8e
     }
   }
 }
