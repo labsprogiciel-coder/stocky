@@ -1,31 +1,98 @@
 {
   "expo": {
-    "name": "Stockly",
-    "slug": "stockly-mobile",
-    "scheme": "stockly",
+    "name": "Mizo",
+    "slug": "tonti-app",
     "version": "1.0.0",
     "orientation": "portrait",
-    "userInterfaceStyle": "light",
+    "icon": "./assets/images/icon.png",
+    "scheme": "kauridoor",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/images/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
     "ios": {
-      "supportsTablet": false,
-      "bundleIdentifier": "com.example.stockly"
+      "supportsTablet": true,
+      "bundleIdentifier": "app.tontipro.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Autoriser Mizo à accéder à la caméra pour scanner les QR codes d'enregistrement des TPE.",
+        "NSLocationWhenInUseUsageDescription": "Autoriser Mizo à accéder à votre localisation pour enregistrer la position du TPE et faciliter son suivi.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Autoriser Mizo à accéder à votre localisation pour enregistrer la position du TPE."
+      },
+      "entitlements": {
+        "com": {
+          "apple": {
+            "developer": {
+              "networking": {
+                "wifi-info": true
+              }
+            }
+          }
+        }
+      }
     },
     "android": {
-      "package": "com.example.stockly"
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "backgroundColor": "#D85A30"
+      },
+      "package": "com.tontipro.app",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
-      "expo-router",
+      [
+        "expo-router",
+        {
+          "origin": "https://rork.app/"
+        }
+      ],
+      "expo-secure-store",
+      "expo-font",
+      "expo-web-browser",
       [
         "expo-camera",
         {
-          "cameraPermission": "Stockly utilise la caméra pour scanner les codes-barres."
+          "cameraPermission": "Autoriser Mizo à accéder à la caméra pour scanner les QR codes d'enregistrement des TPE."
         }
       ],
-      "expo-splash-screen",
-      "expo-status-bar"
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Autoriser Mizo à accéder à votre localisation pour enregistrer la position du TPE et faciliter son suivi."
+        }
+      ],
+      [
+        "@sentry/react-native/expo",
+        {
+          "url": "https://de.sentry.io/",
+          "organization": "progiciel-labs",
+          "project": "mizo-app"
+        }
+      ]
     ],
     "experiments": {
-      "typedRoutes": false
+      "typedRoutes": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "7501fec2-3ee8-4253-8aa4-2cdfe04f58c0"
+      }
+    },
+    "owner": "labo-progiciel",
+    "runtimeVersion": {
+      "policy": "fingerprint"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/7501fec2-3ee8-4253-8aa4-2cdfe04f58c0"
     }
   }
 }
