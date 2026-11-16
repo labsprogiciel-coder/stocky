@@ -31,7 +31,7 @@
  * d'un article (et inversement), pour qu'un scan reste non ambigu.
  */
 import { items as sampleItems, recent as sampleRecent, units as sampleUnits } from './mock';
-import { KEYS, clearAll, isPersistent, readJSON, readRaw, removeKey, writeJSON, writeRaw } from './storage';
+import { KEYS, clearAll, isPersistent, readRaw, removeKey, writeJSON, writeRaw } from './storage';
 import {
   ASSIGNEE_MAX_LENGTH,
   NOTE_MAX_LENGTH,
@@ -523,19 +523,45 @@ function loadPrefs(): Prefs {
  */
 let _loadOverlay: Map<string, string | null> | null = null;
 
-/** Lit une clé de données pour le chargement (journal non réparé pris en compte). */
+/**
+ * Vrai si une lecture de `readData` a échoué (lecture refusée, distincte d'une
+ * clé absente ou d'un JSON corrompu) depuis le début du chargement en cours.
+ */
+let _loadReadFailed = false;
+
+/**
+ * Lit une clé de données pour le chargement (journal non réparé pris en
+ * compte). Renvoie `fallback` si la clé est absente ou son JSON corrompu ; si
+ * la lecture elle-même échoue, renvoie aussi `fallback` mais lève
+ * `_loadReadFailed` : la valeur par défaut ne reflète alors pas le stockage et
+ * ne doit jamais y être écrite.
+ */
 function readData(key: string, fallback: unknown): unknown {
+  let raw: string | null;
   if (_loadOverlay?.has(key)) {
-    const raw = _loadOverlay.get(key) ?? null;
-    if (raw === null) return fallback;
-    try {
-      return JSON.parse(raw) as unknown;
-    } catch {
+    raw = _loadOverlay.get(key) ?? null;
+  } else {
+    const r = readRaw(key);
+    if (!r.ok) {
+      _loadReadFailed = true;
       return fallback;
     }
+    raw = r.value;
   }
-  return readJSON<unknown>(key, fallback);
+  if (raw === null) return fallback;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return fallback;
+  }
 }
+
+/**
+ * Résultat d'un chargement depuis le stockage. `writes` : parties à réécrire
+ * (premier lancement, entrées invalides écartées) ; `readFailed` : une lecture
+ * a échoué, l'état n'est pas fiable et rien ne doit être écrit.
+ */
+type Loaded = { state: State; writes: Part[]; readFailed: boolean };
 
 function loadState(): State {
   // Enregistrement interrompu (journal présent) : réparé AVANT toute lecture.
@@ -546,6 +572,8 @@ function loadState(): State {
   // pas si le stockage est cohérent : la mémoire chargée n'est pas fiable
   // (`_memoryUntrusted`), rien n'est réécrit au chargement et la mémoire est
   // rechargée depuis le stockage dès qu'une réparation aboutit (voir `save`).
+  // De même si une clé de données n'a pas pu être lue : ses valeurs par défaut
+  // ne reflètent pas le stockage et ne doivent pas y être écrites.
   const rec = recoverJournal();
   if (!rec.ok) {
     _storageInconsistent = true;
@@ -555,14 +583,33 @@ function loadState(): State {
       _memoryUntrusted = true;
     }
   }
+  let loaded: Loaded;
   try {
-    return loadStateFromStorage();
+    loaded = loadStateFromStorage();
   } finally {
     _loadOverlay = null;
   }
+  // Mémoire affectée AVANT toute écriture : `save` (via `state()`) écrit cet
+  // état et ne relance pas de chargement.
+  _state = loaded.state;
+  if (loaded.readFailed) {
+    _memoryUntrusted = true;
+    _storageInconsistent = true;
+  } else if (loaded.writes.length > 0) {
+    // Mémoire non fiable : ne pas réécrire (le prochain enregistrement, après
+    // rechargement, s'en charge).
+    if (_memoryUntrusted) _storageInconsistent = true;
+    else persist(...loaded.writes);
+  }
+  return _state;
 }
 
-function loadStateFromStorage(): State {
+/**
+ * Lit l'état depuis le stockage. N'écrit rien et ne modifie ni `_state` ni les
+ * indicateurs : l'appelant décide des écritures (voir `Loaded`).
+ */
+function loadStateFromStorage(): Loaded {
+  _loadReadFailed = false;
   const prefs = loadPrefs();
   const rawItems = readData(KEYS.items, null);
   const cleanedItems = Array.isArray(rawItems) ? rawItems.map(withoutInvalidPhoto) : rawItems;
@@ -574,10 +621,8 @@ function loadStateFromStorage(): State {
   // Une liste vide `[]` est valide (inventaire vide) et suit le chemin normal.
   const unusable = !Array.isArray(rawItems) || (rawItems.length > 0 && items.length === 0);
   if (unusable) {
-    const blank = blankState(prefs);
-    _state = blank;
-    persist('items', 'units', 'movements', 'sessions');
-    return blank;
+    if (_loadReadFailed) return { state: blankState(prefs), writes: [], readFailed: true };
+    return { state: blankState(prefs), writes: ['items', 'units', 'movements', 'sessions'], readFailed: false };
   }
 
   const itemIds = new Set(items.map((i) => i.id));
@@ -652,13 +697,11 @@ function loadStateFromStorage(): State {
   const lastSavedAt = isRecord(rawMeta) && isFiniteNumber(rawMeta.lastSavedAt) ? rawMeta.lastSavedAt : undefined;
 
   const loaded: State = { items, units, movements, sessions, prefs, lastSavedAt };
-  if (dirty.length > 0) {
-    _state = loaded;
-    // Mémoire non fiable : ne pas réécrire (le prochain enregistrement complet s'en charge).
-    if (_memoryUntrusted) _storageInconsistent = true;
-    else persist(...dirty);
-  }
-  return loaded;
+  // Lecture refusée : l'état lu est incomplet (par ex. articles sans leurs
+  // unités, stock dérivé faux). On affiche un inventaire vide, jamais
+  // enregistré, jusqu'à un rechargement complet (voir `save`).
+  if (_loadReadFailed) return { state: blankState(prefs), writes: [], readFailed: true };
+  return { state: loaded, writes: dirty, readFailed: false };
 }
 
 function state(): State {
@@ -813,8 +856,10 @@ type SaveResult =
    * `unchanged` : le stockage est resté (ou revenu) à son état précédent, sans journal en attente.
    * `reloaded` : rien n'a été écrit, la mémoire a été rechargée depuis le stockage
    * (voir `_memoryUntrusted`) : l'opération en cours est abandonnée.
+   * `untrusted` : rien n'a été écrit, la mémoire n'est toujours pas fiable
+   * (rechargement impossible, lecture refusée) : l'opération en cours est abandonnée.
    */
-  | { ok: false; written: Part[]; unchanged: boolean; reloaded?: boolean };
+  | { ok: false; written: Part[]; unchanged: boolean; reloaded?: boolean; untrusted?: boolean };
 
 /**
  * Écrit `parts` (toutes les parties si le stockage est peut-être incohérent)
@@ -830,10 +875,15 @@ function save(parts: readonly Part[]): SaveResult {
   if (_memoryUntrusted) {
     // Réparation aboutie : le stockage est cohérent, la mémoire peut ne pas
     // l'être. On la recharge (sans écrire la mémoire douteuse) et l'opération
-    // en cours échoue.
+    // en cours échoue. Si une lecture échoue encore, la mémoire reste non
+    // fiable et rien n'est écrit (nouvel essai au prochain enregistrement).
+    const loaded = loadStateFromStorage();
+    if (loaded.readFailed) return { ok: false, written: [], unchanged: true, untrusted: true };
     _memoryUntrusted = false;
-    _storageInconsistent = false;
-    _state = loadStateFromStorage();
+    // Nettoyage éventuel (premier lancement, entrées invalides) : fait par le
+    // prochain enregistrement, qui réécrira alors toutes les clés.
+    _storageInconsistent = loaded.writes.length > 0;
+    _state = loaded.state;
     return { ok: false, written: [], unchanged: true, reloaded: true };
   }
   const full = _storageInconsistent;
@@ -896,7 +946,7 @@ function save(parts: readonly Part[]): SaveResult {
  */
 function persist(...parts: Part[]): boolean {
   const r = save(parts);
-  if (!r.ok && !r.reloaded) _storageInconsistent = true;
+  if (!r.ok && !r.reloaded && !r.untrusted) _storageInconsistent = true;
   return r.ok;
 }
 
@@ -909,6 +959,31 @@ const SAVE_ERROR =
 
 const PARTIAL_SAVE_ERROR =
   "Enregistrement incomplet : les données de l'appareil peuvent être partiellement enregistrées. Réessayez l'opération.";
+
+/**
+ * Mémoire non fiable (voir `_memoryUntrusted`) : les opérations qui modifient
+ * la mémoire avant `persist` (sans retour arrière) sont refusées d'emblée, sans
+ * rien modifier ni écrire. On tente au passage la réparation et le
+ * rechargement (`save` n'écrit aucune donnée tant que la mémoire n'est pas
+ * fiable). Renvoie `true` si l'opération doit échouer avec `SAVE_ERROR`.
+ */
+/**
+ * Faux tant que la mémoire n'est pas fiable (voir `_memoryUntrusted`) : les
+ * listes affichées peuvent alors être vides alors que le stockage contient des
+ * articles. Utilisé par le nettoyage des photos orphelines, qui ne doit rien
+ * supprimer d'après une mémoire non fiable.
+ */
+export function isMemoryTrusted(): boolean {
+  state();
+  return !_memoryUntrusted;
+}
+
+function refuseUntrusted(): boolean {
+  state();
+  if (!_memoryUntrusted) return false;
+  save([]);
+  return true;
+}
 
 type Snapshot = Pick<State, 'items' | 'units' | 'movements' | 'sessions'>;
 
@@ -938,6 +1013,7 @@ function commit(snap: Snapshot, ...parts: Part[]): string | null {
   if (r.ok) return null;
   if (r.reloaded) return SAVE_ERROR; // mémoire rechargée depuis le stockage : `snap` en est antérieur
   Object.assign(state(), snap);
+  if (r.untrusted) return SAVE_ERROR; // rien n'a été écrit, mémoire rétablie
   if (!r.unchanged) _storageInconsistent = true;
   return _storageInconsistent ? PARTIAL_SAVE_ERROR : SAVE_ERROR;
 }
@@ -1071,6 +1147,7 @@ function nextItemId(): string {
 }
 
 export function createItem(input: NewItemInput): CreateItemResult {
+  if (refuseUntrusted()) return { error: SAVE_ERROR };
   const name = input.name.trim();
   const folder = input.folder.trim();
   const barcode = input.barcode?.trim() ?? '';
@@ -1124,6 +1201,7 @@ export function createItem(input: NewItemInput): CreateItemResult {
  * fichier est supprimé après l'enregistrement.
  */
 export function updateItem(id: string, patch: UpdateItemPatch): UpdateItemResult {
+  if (refuseUntrusted()) return { error: SAVE_ERROR };
   const current = getItem(id);
   if (!current) return { error: 'Article introuvable.', field: 'id' };
 
@@ -1211,6 +1289,7 @@ export function updateItem(id: string, patch: UpdateItemPatch): UpdateItemResult
  * l'une de ses unités, et sa photo.
  */
 export function deleteItem(id: string): DeleteItemResult {
+  if (refuseUntrusted()) return { ok: false, error: SAVE_ERROR };
   const item = getItem(id);
   if (!item) return { ok: false, error: 'Article introuvable.' };
   const s = state();
@@ -1278,6 +1357,7 @@ export function getMovements(): Movement[] {
 
 /** Enregistre un mouvement Entrée/Sortie. Renvoie un message d'erreur ou null. */
 export function commitMovement(code: string, mode: MovementMode, qty: number): string | null {
+  if (refuseUntrusted()) return SAVE_ERROR;
   const item = findItemByCode(code);
   if (!item) return findUnitByCode(code) ? SERIALIZED_MOVEMENT_ERROR : 'Article introuvable.';
   if (item.serialized) return SERIALIZED_MOVEMENT_ERROR;
@@ -1295,6 +1375,7 @@ export function commitMovement(code: string, mode: MovementMode, qty: number): s
 
 /** Ajuste le stock depuis la fiche article. Renvoie un message d'erreur ou null. */
 export function adjustStock(itemId: string, newQty: number): string | null {
+  if (refuseUntrusted()) return SAVE_ERROR;
   const item = getItem(itemId);
   if (!item) return 'Article introuvable.';
   if (item.serialized) return SERIALIZED_ADJUST_ERROR;
@@ -1590,6 +1671,7 @@ function writableSession(id: string): CountSession | string {
  * des unités trouvées (absent = aucune) et `qty` est ignoré (= leur nombre).
  */
 export function saveCountEntry(id: string, itemId: string, entry: CountEntry): string | null {
+  if (refuseUntrusted()) return SAVE_ERROR;
   if (id !== CYCLE_COUNT.id) return 'Comptage introuvable.';
   const list = getCountItems(id);
   if (list.length === 0) return 'Aucun article à compter. Ajoutez des articles à l\'inventaire.';
@@ -1706,6 +1788,7 @@ export function getCountDiscrepancies(countId: string = CYCLE_COUNT.id): CountDi
 }
 
 export function setCountIndex(id: string, idx: number): void {
+  if (refuseUntrusted()) return;
   const len = getCountItems(id).length;
   if (len === 0 || !Number.isFinite(idx)) return;
   const session = writableSession(id);
@@ -1797,6 +1880,7 @@ export function completeCount(id: string, applyAdjustments: boolean): CompleteCo
 
 /** Démarre une nouvelle session (la précédente est effacée). */
 export function restartCount(id: string): void {
+  if (refuseUntrusted()) return;
   if (id !== CYCLE_COUNT.id) return;
   const s = state();
   s.sessions = { ...s.sessions, [id]: freshSession(id) };
@@ -1837,6 +1921,7 @@ export function getPrefs(): Prefs {
 }
 
 export function setPrefs(partial: Partial<Prefs>): void {
+  if (refuseUntrusted()) return;
   const s = state();
   s.prefs = { ...s.prefs, ...partial };
   persist('prefs');
@@ -1866,13 +1951,18 @@ export function resetAllData(): void {
  * d'exemple de `data/mock.ts` (préférences conservées, photos supprimées).
  * Utilisé uniquement depuis Profil › Stockage local.
  */
-export function loadSampleData(): void {
+export function loadSampleData(): string | null {
+  // Mémoire non fiable : refusé sans rien modifier (ni données, ni photos).
+  if (refuseUntrusted()) return SAVE_ERROR;
   const prev = state();
-  removeAllPhotoFiles();
   _pendingCountScans.clear();
   _pendingPicks.clear();
   _state = { ...sampleState(prev.prefs), ...(prev.lastSavedAt !== undefined ? { lastSavedAt: prev.lastSavedAt } : {}) };
-  persist('items', 'units', 'movements', 'sessions');
+  // Photos supprimées seulement une fois les données d'exemple enregistrées :
+  // si l'écriture échoue, le stockage garde les anciens articles et leurs
+  // photos (les fichiers devenus orphelins sont nettoyés au lancement suivant).
+  if (persist('items', 'units', 'movements', 'sessions')) removeAllPhotoFiles();
+  return null;
 }
 
 export function getStorageInfo(): StorageInfo {

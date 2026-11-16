@@ -23,7 +23,7 @@
 import { Alert, Linking } from 'react-native';
 import type * as FileSystemModule from 'expo-file-system';
 import type * as ImagePickerModule from 'expo-image-picker';
-import { getItems, isPhotoName, setPhotoFileHooks } from './store';
+import { getItems, isMemoryTrusted, isPhotoName, setPhotoFileHooks } from './store';
 
 export type PhotoSource = 'camera' | 'library';
 
@@ -113,11 +113,16 @@ export function deleteAllPhotos(): void {
  * apparaissent quand les articles ne sont pas conservés (stockage temporaire
  * d'Expo Go, données stockées illisibles) ou quand l'app est tuée entre le
  * choix d'une photo et l'enregistrement du formulaire. Les photos choisies
- * depuis le lancement (formulaire en cours) sont épargnées.
+ * depuis le lancement (formulaire en cours) sont épargnées. Rien n'est
+ * supprimé tant que la mémoire du store n'est pas fiable (`isMemoryTrusted`).
  * Appelé au démarrage par `app/_layout.tsx`.
  */
 export function sweepOrphanPhotos(): void {
   if (_swept) return;
+  // Mémoire non fiable (lecture du stockage refusée au chargement) : la liste
+  // des articles peut être vide alors que le stockage en contient. Aucun
+  // fichier n'est supprimé ; le nettoyage sera retenté au prochain appel.
+  if (!isMemoryTrusted()) return;
   _swept = true;
   const fs = loadFileSystem();
   if (!fs) return;

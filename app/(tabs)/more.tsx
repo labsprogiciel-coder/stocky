@@ -157,9 +157,13 @@ export default function Profile() {
           text: 'Remplacer les données',
           style: 'destructive',
           onPress: () => {
-            loadSampleData();
+            const error = loadSampleData();
             const next = getStorageInfo();
             setInfo(next);
+            if (error) {
+              Alert.alert('Données d\'exemple non chargées', error);
+              return;
+            }
             Alert.alert('Données d\'exemple chargées', `${fmtCount(next.itemCount, 'article d\'exemple a été ajouté', 'articles d\'exemple ont été ajoutés')}.`);
           },
         },
