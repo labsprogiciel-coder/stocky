@@ -269,7 +269,7 @@ export default function Count() {
       <Card style={{ gap: 14 }}>
         {/* Item info */}
         <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
-          <Thumb size={72} />
+          <Thumb size={72} photo={cur.photo} />
           <View style={{ flex: 1 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 }}>
               <Text style={{ fontSize: 13, color: colors.muted, fontWeight: '600' }}>{curIdx + 1} / {list.length}</Text>
@@ -327,7 +327,7 @@ export default function Count() {
           const s = statusOf(it.id);
           return (
             <Row key={it.id} onPress={() => jumpTo(i)}>
-              <Thumb size={40} />
+              <Thumb size={40} photo={it.photo} />
               <Text style={{ flex: 1, fontSize: 14, fontWeight: i === curIdx ? '700' : '600' }}>{it.name}</Text>
               <Text style={{
                 fontSize: 12,

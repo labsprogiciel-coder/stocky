@@ -17,7 +17,7 @@
       "supportsTablet": true,
       "bundleIdentifier": "app.stockly.app",
       "infoPlist": {
-        "NSCameraUsageDescription": "Autoriser stockly à accéder à la caméra pour scanner les QR codes d'enregistrement des TPE.",
+        "NSCameraUsageDescription": "Autoriser stockly à accéder à la caméra pour scanner les QR codes d'enregistrement des TPE et photographier les articles.",
         "NSLocationWhenInUseUsageDescription": "Autoriser stockly à accéder à votre localisation pour enregistrer la position du TPE et faciliter son suivi.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Autoriser stockly à accéder à votre localisation pour enregistrer la position du TPE."
       },
@@ -62,7 +62,14 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Autoriser stockly à accéder à la caméra pour scanner les QR codes d'enregistrement des TPE."
+          "cameraPermission": "Autoriser stockly à accéder à la caméra pour scanner les QR codes d'enregistrement des TPE et photographier les articles."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Autoriser stockly à accéder à vos photos pour ajouter une image aux articles.",
+          "cameraPermission": "Autoriser stockly à accéder à la caméra pour scanner les QR codes d'enregistrement des TPE et photographier les articles."
         }
       ],
       [

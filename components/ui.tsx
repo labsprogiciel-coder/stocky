@@ -1,8 +1,12 @@
-import React from 'react';
-import { Pressable, Text, View, ScrollView, StyleProp, ViewStyle, TextStyle } from 'react-native';
+import React, { useState } from 'react';
+import { Image, Pressable, Text, View, ScrollView, StyleProp, ViewStyle, TextStyle } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { colors } from '../constants/theme';
+import { photoUri } from '../data/photos';
+
+/** Couleur des actions destructives (suppression, réinitialisation). */
+export const DANGER = '#8A2A1B';
 
 export type IconName = React.ComponentProps<typeof Feather>['name'];
 
@@ -72,13 +76,14 @@ export function Btn({
 }: {
   title: string;
   onPress?: () => void;
-  variant?: 'primary' | 'outline';
+  variant?: 'primary' | 'outline' | 'danger';
   disabled?: boolean;
   style?: StyleProp<ViewStyle>;
   accessibilityLabel?: string;
   accessibilityHint?: string;
 }) {
   const primary = variant === 'primary';
+  const fg = primary ? '#fff' : variant === 'danger' ? DANGER : colors.primary;
   return (
     <Pressable
       accessibilityRole="button"
@@ -96,13 +101,13 @@ export function Btn({
           paddingHorizontal: 20,
           backgroundColor: primary ? colors.primary : '#fff',
           borderWidth: primary ? 0 : 1,
-          borderColor: colors.primary,
+          borderColor: variant === 'danger' ? DANGER : colors.primary,
           opacity: disabled ? 0.4 : 1,
         },
         style,
       ]}
     >
-      <Text style={{ fontSize: 15, fontWeight: '600', color: primary ? '#fff' : colors.primary }}>{title}</Text>
+      <Text style={{ fontSize: 15, fontWeight: '600', color: fg }}>{title}</Text>
     </Pressable>
   );
 }
@@ -190,11 +195,86 @@ export const Progress = ({ value }: { value: number }) => (
   </View>
 );
 
-export const Thumb = ({ size = 48 }: { size?: number }) => (
-  <View style={{ width: size, height: size, borderRadius: 10, backgroundColor: colors.tint, alignItems: 'center', justifyContent: 'center' }}>
-    <Icon name="image" size={Math.round(size * 0.45)} color={colors.primary} />
-  </View>
-);
+/**
+ * URI d'une photo d'article (nom de fichier `Item.photo`, résolu à chaque
+ * rendu) ; `null` si absente ou si l'image n'a pas pu être affichée.
+ */
+function usePhotoSource(photo: string | null | undefined) {
+  const uri = photoUri(photo);
+  const [failedUri, setFailedUri] = useState<string | null>(null);
+  return {
+    uri: uri !== null && uri !== failedUri ? uri : null,
+    onError: () => setFailedUri(uri),
+  };
+}
+
+/**
+ * Vignette d'article : la photo (`photo` = nom de fichier `Item.photo`) si
+ * elle existe, sinon l'icône par défaut. Décorative par défaut ; passer
+ * `accessibilityLabel` pour qu'elle soit annoncée.
+ */
+export function Thumb({ size = 48, photo, accessibilityLabel }: { size?: number; photo?: string | null; accessibilityLabel?: string }) {
+  const { uri, onError } = usePhotoSource(photo);
+  const a11y = accessibilityLabel
+    ? { accessible: true, accessibilityRole: 'image' as const, accessibilityLabel }
+    : { accessible: false, accessibilityElementsHidden: true, importantForAccessibility: 'no-hide-descendants' as const };
+  if (uri) {
+    return (
+      <Image
+        {...a11y}
+        source={{ uri }}
+        onError={onError}
+        resizeMode="cover"
+        accessibilityIgnoresInvertColors
+        style={{ width: size, height: size, borderRadius: 10, backgroundColor: colors.tint }}
+      />
+    );
+  }
+  return (
+    <View {...a11y} style={{ width: size, height: size, borderRadius: 10, backgroundColor: colors.tint, alignItems: 'center', justifyContent: 'center' }}>
+      <Icon name="image" size={Math.round(size * 0.45)} color={colors.primary} />
+    </View>
+  );
+}
+
+/** Grande photo d'article (fiche, formulaire), ou un emplacement vide. */
+export function ItemPhoto({
+  photo,
+  height = 200,
+  accessibilityLabel,
+  emptyLabel = 'Aucune photo',
+}: {
+  photo?: string | null;
+  height?: number;
+  accessibilityLabel: string;
+  emptyLabel?: string;
+}) {
+  const { uri, onError } = usePhotoSource(photo);
+  if (uri) {
+    return (
+      <Image
+        accessible
+        accessibilityRole="image"
+        accessibilityLabel={accessibilityLabel}
+        accessibilityIgnoresInvertColors
+        source={{ uri }}
+        onError={onError}
+        resizeMode="contain"
+        style={{ height, borderRadius: 14, backgroundColor: '#fff', borderWidth: 1, borderColor: colors.border }}
+      />
+    );
+  }
+  return (
+    <View
+      accessible
+      accessibilityLabel={emptyLabel}
+      style={{ height, borderRadius: 14, borderWidth: 2, borderStyle: 'dashed', borderColor: '#C9C6BB', backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+    >
+      <Icon name="image" size={28} color={colors.muted} />
+      <Muted>{emptyLabel}</Muted>
+    </View>
+  );
+}
 
 export function Stepper({ value, onChange, big }: { value: number; onChange: (n: number) => void; big?: boolean }) {
   const btn = { width: 56, height: 56, borderRadius: 12, borderWidth: 1, borderColor: colors.field, backgroundColor: '#fff', alignItems: 'center' as const, justifyContent: 'center' as const };
