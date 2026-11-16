@@ -1,23 +1,41 @@
-import { useState, useRef } from 'react';
-import { View, Text, Pressable, StyleSheet, Alert } from 'react-native';
-import { router } from 'expo-router';
-import { CameraView, useCameraPermissions } from 'expo-camera';
+import { useState, useRef, useCallback } from 'react';
+import { View, Text, Pressable, StyleSheet, Alert, TextInput, Vibration, KeyboardAvoidingView, Platform, Linking } from 'react-native';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { CameraView, useCameraPermissions, type BarcodeType } from 'expo-camera';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Btn, Icon, Segmented, Stepper, Alert as InlineAlert } from '../components/ui';
 import { colors } from '../constants/theme';
-import { findItemBySku, commitMovement } from '../data/store';
+import { findItemByCode, commitMovement, getPrefs, setPendingCountScan } from '../data/store';
+
+const BARCODE_TYPES: BarcodeType[] = ['ean13', 'ean8', 'upc_a', 'upc_e', 'code128', 'code39', 'qr'];
 
 export default function Scan() {
+  const { countId } = useLocalSearchParams<{ countId?: string }>();
+  const countTarget = typeof countId === 'string' && countId.length > 0 ? countId : null;
+  const countMode = countTarget !== null;
+
   const [perm, requestPerm] = useCameraPermissions();
   const [torch, setTorch] = useState(false);
   const [code, setCode] = useState<string | null>(null);
   const [mode, setMode] = useState<'Entrée' | 'Sortie'>('Entrée');
   const [qty, setQty] = useState(1);
   const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-  const cameraRef = useRef<CameraView>(null);
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualText, setManualText] = useState('');
+  // Incrémenté au retour sur l'écran pour relire le store (ex. article créé).
+  const [, setRefresh] = useState(0);
+  // Verrou synchrone : la caméra peut émettre plusieurs lectures avant le rendu.
+  const lockedRef = useRef(false);
+  // Verrou synchrone contre le double appui sur Valider (le state est groupé par React).
+  const committingRef = useRef(false);
 
-  const item = code ? findItemBySku(code) : null;
+  useFocusEffect(
+    useCallback(() => {
+      setRefresh((n) => n + 1);
+    }, [])
+  );
+
+  const item = code ? findItemByCode(code) ?? null : null;
   const unknownCode = code !== null && item === null;
 
   // ── qty validation ────────────────────────────────────────────────────────
@@ -28,45 +46,49 @@ export default function Scan() {
       ? `Stock insuffisant — disponible : ${item.qty} unité(s).`
       : null;
 
-  const canSubmit = !!item && !qtyError && !submitting;
+  const canSubmit = !!item && !qtyError;
 
   // ── handlers ──────────────────────────────────────────────────────────────
-  const handleBarcodeScanned = (data: string) => {
-    if (code) return; // already locked
+  const handleCode = (raw: string, source: 'camera' | 'manual') => {
+    const data = raw.trim();
+    if (!data || lockedRef.current) return;
+    lockedRef.current = true;
+    if (source === 'camera' && getPrefs().vibration) Vibration.vibrate(60);
+
+    if (countTarget) {
+      setPendingCountScan(countTarget, data);
+      router.back();
+      return;
+    }
+
     setCode(data);
+    setManualOpen(false);
+    setManualText('');
     setError(null);
     setQty(1);
     setMode('Entrée');
   };
 
-  const handleManualCapture = async () => {
-    try {
-      if (cameraRef.current) {
-        await cameraRef.current.takePictureAsync({ skipProcessing: true }).catch(() => {});
-      }
-    } catch {
-      // Simulator / unsupported — no-op
-    }
-    if (!code) {
-      // Dev/sim fallback: resolve first item
-      handleBarcodeScanned('SKU-1000');
-    }
-  };
-
   const handleReset = () => {
+    lockedRef.current = false;
+    committingRef.current = false;
     setCode(null);
     setQty(1);
     setMode('Entrée');
     setError(null);
-    setSubmitting(false);
+  };
+
+  const handleCreate = () => {
+    if (!code) return;
+    router.push({ pathname: '/article/new', params: { barcode: code } });
   };
 
   const handleValidate = () => {
-    if (!item || !code || qtyError) return;
-    setSubmitting(true);
+    if (!item || !code || qtyError || committingRef.current) return;
+    committingRef.current = true;
     const err = commitMovement(code, mode, qty);
-    setSubmitting(false);
     if (err) {
+      committingRef.current = false;
       setError(err);
       return;
     }
@@ -80,46 +102,41 @@ export default function Scan() {
     );
   };
 
-  // ── Permission gate ────────────────────────────────────────────────────────
-  if (!perm?.granted) {
-    return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: '#101714', justifyContent: 'center', padding: 24, gap: 16 }}>
-        <Text style={{ color: '#fff', fontSize: 16, textAlign: 'center' }}>
-          L'accès à la caméra est nécessaire pour scanner les codes-barres.
-        </Text>
-        <Btn title="Autoriser la caméra" onPress={requestPerm} />
-        <Btn title="Fermer" variant="outline" onPress={() => router.back()} />
-      </SafeAreaView>
-    );
-  }
+  const camGranted = !!perm?.granted;
+  const scanning = !code && !manualOpen;
 
   return (
     <View style={{ flex: 1, backgroundColor: '#101714' }}>
-      <CameraView
-        ref={cameraRef}
-        style={StyleSheet.absoluteFill}
-        facing="back"
-        enableTorch={torch}
-        onBarcodeScanned={code ? undefined : (r) => handleBarcodeScanned(r.data)}
-      />
+      {camGranted && (
+        <CameraView
+          style={StyleSheet.absoluteFill}
+          facing="back"
+          enableTorch={torch}
+          barcodeScannerSettings={{ barcodeTypes: BARCODE_TYPES }}
+          onBarcodeScanned={scanning ? (r) => handleCode(r.data, 'camera') : undefined}
+        />
+      )}
 
       {/* Top action bar */}
       <SafeAreaView style={styles.topBar}>
         <Pressable accessibilityRole="button" accessibilityLabel="Fermer" onPress={() => router.back()} style={styles.iconBtn}>
           <Icon name="x" color="#fff" />
         </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Lampe torche"
-          onPress={() => setTorch((t) => !t)}
-          style={[styles.iconBtn, torch && styles.iconBtnActive]}
-        >
-          <Icon name="zap" color={torch ? colors.primary : '#fff'} />
-        </Pressable>
+        {camGranted && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Lampe torche"
+            accessibilityState={{ selected: torch }}
+            onPress={() => setTorch((t) => !t)}
+            style={[styles.iconBtn, torch && styles.iconBtnActive]}
+          >
+            <Icon name="zap" color={torch ? colors.primary : '#fff'} />
+          </Pressable>
+        )}
       </SafeAreaView>
 
       {/* Viewfinder overlay — shown while no code locked */}
-      {!code && (
+      {scanning && camGranted && (
         <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
           <View style={styles.maskTop} />
           <View style={styles.centerRow}>
@@ -134,44 +151,85 @@ export default function Scan() {
             <View style={styles.maskSide} />
           </View>
           <View style={styles.maskBottom}>
-            <Text style={styles.hintText}>Placez le code dans le cadre</Text>
-            <View style={styles.captureContainer}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Capturer manuellement"
-                onPress={handleManualCapture}
-                style={({ pressed }) => [
-                  styles.captureBtnOuter,
-                  pressed && { transform: [{ scale: 0.94 }], opacity: 0.9 },
-                ]}
-              >
-                <View style={styles.captureBtnInner}>
-                  <Icon name="maximize" size={24} color="#fff" />
-                </View>
-              </Pressable>
-              <Text style={styles.captureLabel}>Capturer</Text>
-            </View>
+            <Text style={styles.hintText}>
+              {countMode ? 'Scannez un article du comptage' : 'Placez le code dans le cadre'}
+            </Text>
+            <ManualButton onPress={() => setManualOpen(true)} />
           </View>
         </View>
       )}
 
+      {/* No camera access — manual entry stays available */}
+      {scanning && !camGranted && perm && (
+        <SafeAreaView edges={['bottom']} style={styles.permBox}>
+          <Text style={{ color: '#fff', fontSize: 16, textAlign: 'center' }}>
+            L'accès à la caméra est nécessaire pour scanner les codes-barres.
+          </Text>
+          {perm.canAskAgain ? (
+            <Btn title="Autoriser la caméra" onPress={requestPerm} />
+          ) : (
+            <Btn title="Ouvrir les réglages" onPress={() => { void Linking.openSettings(); }} />
+          )}
+          <Btn title="Saisie manuelle" variant="outline" onPress={() => setManualOpen(true)} />
+        </SafeAreaView>
+      )}
+
+      {/* Manual entry sheet */}
+      {!code && manualOpen && (
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.sheetHost}
+          pointerEvents="box-none"
+        >
+          <SafeAreaView edges={['bottom']} style={styles.sheetBody}>
+            <Text style={{ fontSize: 17, fontWeight: '600', color: colors.text }}>Saisie manuelle</Text>
+            <Text style={{ fontSize: 13, color: colors.muted }}>Saisissez le code-barres ou la référence (SKU).</Text>
+            <TextInput
+              value={manualText}
+              onChangeText={setManualText}
+              placeholder="Ex. 3760123450003 ou SKU-1000"
+              placeholderTextColor={colors.muted}
+              accessibilityLabel="Code-barres ou référence"
+              autoFocus
+              autoCapitalize="characters"
+              autoCorrect={false}
+              returnKeyType="search"
+              onSubmitEditing={() => handleCode(manualText, 'manual')}
+              style={styles.input}
+            />
+            <Btn
+              title="Valider le code"
+              onPress={() => handleCode(manualText, 'manual')}
+              disabled={manualText.trim().length === 0}
+            />
+            <Btn
+              title={camGranted ? 'Revenir au scanner' : 'Annuler'}
+              variant="outline"
+              onPress={() => { setManualOpen(false); setManualText(''); }}
+            />
+          </SafeAreaView>
+        </KeyboardAvoidingView>
+      )}
+
       {/* Unknown code banner */}
       {unknownCode && (
-        <SafeAreaView edges={['bottom']} style={styles.bottomSheet}>
+        <SafeAreaView edges={['bottom']} style={styles.sheet}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
             <Icon name="alert-circle" size={20} color={colors.warnText} />
             <View style={{ flex: 1 }}>
               <Text style={{ fontSize: 15, fontWeight: '600', color: colors.warnText }}>Code non reconnu</Text>
-              <Text style={{ fontSize: 13, color: colors.muted, marginTop: 2 }}>{code}</Text>
+              <Text selectable style={{ fontSize: 13, color: colors.muted, marginTop: 2 }}>{code}</Text>
             </View>
           </View>
+          <Text style={{ fontSize: 13, color: colors.muted }}>Aucun article ne correspond à ce code sur cet appareil.</Text>
+          <Btn title="Créer l'article" onPress={handleCreate} />
           <Btn title="Scanner un autre article" variant="outline" onPress={handleReset} />
         </SafeAreaView>
       )}
 
       {/* Scanned item bottom sheet */}
       {item && (
-        <SafeAreaView edges={['bottom']} style={styles.bottomSheet}>
+        <SafeAreaView edges={['bottom']} style={styles.sheet}>
           {/* Header row */}
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
             <View style={{ flex: 1 }}>
@@ -203,10 +261,31 @@ export default function Scan() {
           {qtyError && <InlineAlert message={qtyError} />}
           {error && <InlineAlert message={error} />}
 
-          <Btn title={submitting ? 'Enregistrement…' : 'Valider'} onPress={handleValidate} disabled={!canSubmit} />
+          <Btn title="Valider" onPress={handleValidate} disabled={!canSubmit} />
           <Btn title="Scanner un autre article" variant="outline" onPress={handleReset} />
         </SafeAreaView>
       )}
+    </View>
+  );
+}
+
+function ManualButton({ onPress }: { onPress: () => void }) {
+  return (
+    <View style={styles.captureContainer}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Saisie manuelle du code"
+        onPress={onPress}
+        style={({ pressed }) => [
+          styles.captureBtnOuter,
+          pressed && { transform: [{ scale: 0.94 }], opacity: 0.9 },
+        ]}
+      >
+        <View style={styles.captureBtnInner}>
+          <Icon name="edit-3" size={24} color="#fff" />
+        </View>
+      </Pressable>
+      <Text style={styles.captureLabel}>Saisie manuelle</Text>
     </View>
   );
 }
@@ -322,7 +401,21 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     letterSpacing: 0.3,
   },
-  bottomSheet: {
+  permBox: {
+    flex: 1,
+    justifyContent: 'center',
+    padding: 24,
+    gap: 16,
+  },
+  sheetHost: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: 'flex-end',
+  },
+  sheet: {
     position: 'absolute',
     left: 0,
     right: 0,
@@ -332,5 +425,22 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 22,
     padding: 20,
     gap: 12,
+  },
+  sheetBody: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    padding: 20,
+    gap: 12,
+  },
+  input: {
+    height: 48,
+    paddingHorizontal: 14,
+    borderWidth: 1,
+    borderColor: colors.field,
+    borderRadius: 10,
+    backgroundColor: '#fff',
+    fontSize: 16,
+    color: colors.text,
   },
 });

@@ -125,7 +125,8 @@ export default function ArticleDetail() {
           <View accessibilityLabel="Aperçu du code-barres" style={{ flexDirection: 'row', height: 56 }}>
             {BARS.map((w, i) => <View key={i} style={{ width: w * 2, backgroundColor: i % 2 === 0 ? '#000' : '#fff' }} />)}
           </View>
-          <Text style={{ fontFamily: 'Courier', letterSpacing: 3 }}>{item.sku}</Text>
+          <Text selectable style={{ fontFamily: 'Courier', letterSpacing: 3 }}>{item.barcode ?? item.sku}</Text>
+          {!item.barcode && <Muted>Aucun code-barres enregistré — le SKU est utilisé.</Muted>}
           <Btn title="Imprimer l'étiquette" variant="outline" style={{ alignSelf: 'stretch' }} />
         </Card>
 

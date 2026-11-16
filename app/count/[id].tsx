@@ -1,98 +1,222 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { View, Text, Pressable, Alert } from 'react-native';
-import { router } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Screen, H2, Card, Btn, Progress, Stepper, Thumb, Muted, Icon, Row, Alert as InlineAlert } from '../../components/ui';
 import { colors } from '../../constants/theme';
-import { getItems } from '../../data/store';
-import { cycleCount } from '../../data/mock';
+import {
+  type CountEntry,
+  type Item,
+  completeCount,
+  consumePendingCountScan,
+  findItemByCode,
+  fmtDateTime,
+  getCountItems,
+  getCountSession,
+  getCycleCount,
+  restartCount,
+  saveCountEntry,
+  setCountIndex,
+} from '../../data/store';
 
-type Status = 'Compté' | 'Passé' | 'À compter';
-type CountEntry = { qty: number; status: Status };
+type Status = CountEntry['status'] | 'À compter';
 
 export default function Count() {
-  const allItems = getItems();
-  const list = allItems.slice(0, cycleCount.total);
+  const { id: rawId } = useLocalSearchParams<{ id: string }>();
+  const id = typeof rawId === 'string' ? rawId : '';
+  const info = getCycleCount();
+  const known = id === info.id;
 
-  const [counts, setCounts] = useState<Record<string, CountEntry>>({});
-  const [idx, setIdx] = useState(Math.min(cycleCount.done, list.length - 1));
-  const [qty, setQty] = useState(0);
+  const [list, setList] = useState<Item[]>(() => getCountItems(id));
+  const [counts, setCounts] = useState<Record<string, CountEntry>>(() => getCountSession(id)?.entries ?? {});
+  const [idx, setIdx] = useState(() => Math.min(getCountSession(id)?.idx ?? 0, Math.max(0, list.length - 1)));
+  const [qty, setQty] = useState(() => counts[list[idx]?.id ?? '']?.qty ?? 0);
+  const [completedAt, setCompletedAt] = useState<number | undefined>(() => getCountSession(id)?.completedAt);
   const [error, setError] = useState<string | null>(null);
+  const [scanError, setScanError] = useState<string | null>(null);
 
-  const cur = list[idx];
-  const doneCount = Object.keys(counts).length;
-  const statusOf = (id: string): Status => counts[id]?.status ?? 'À compter';
-
-  // ── Validation ─────────────────────────────────────────────────────────────
-  // "Valider et suivant" requires the user to have intentionally set a qty
-  // (even 0 is acceptable only if they tap the minus from 1, so we just check
-  //  that the user hasn't left it at 0 when counting — they should use "Passer"
-  //  to skip deliberately).
-  const validateCount = (): string | null => {
-    if (qty < 0) return 'La quantité ne peut pas être négative.';
-    // qty === 0 is technically valid (item really has 0 in stock),
-    // but we surface a soft warning so the user thinks twice.
-    return null;
+  const reload = () => {
+    const session = getCountSession(id);
+    const items = getCountItems(id);
+    setList(items);
+    setCounts(session?.entries ?? {});
+    const i = Math.min(session?.idx ?? 0, Math.max(0, items.length - 1));
+    setIdx(i);
+    setQty(session?.entries[items[i]?.id ?? '']?.qty ?? 0);
+    setCompletedAt(session?.completedAt);
+    setError(null);
+    setScanError(null);
   };
 
-  const next = (status: Status) => {
-    if (status === 'Compté') {
-      const err = validateCount();
-      if (err) { setError(err); return; }
-    }
-    setCounts((c) => ({ ...c, [cur.id]: { qty: status === 'Compté' ? qty : 0, status } }));
-    setQty(0);
+  const jumpTo = (i: number, items: Item[] = list) => {
+    const it = items[i];
+    if (!it) return;
+    setIdx(i);
+    setCountIndex(id, i);
+    setQty(counts[it.id]?.qty ?? 0);
     setError(null);
+  };
+
+  // Au retour du scanner : rafraîchir les articles et traiter le code scanné.
+  useFocusEffect(
+    useCallback(() => {
+      const items = getCountItems(id);
+      setList(items);
+      const code = consumePendingCountScan(id);
+      if (!code) return;
+      const found = findItemByCode(code);
+      if (!found) {
+        setScanError(`Code inconnu : ${code}`);
+        return;
+      }
+      const i = items.findIndex((it) => it.id === found.id);
+      if (i < 0) {
+        setScanError(`Article hors comptage : ${found.name}`);
+        return;
+      }
+      setScanError(null);
+      setIdx(i);
+      setCountIndex(id, i);
+      const entries = getCountSession(id)?.entries ?? {};
+      setQty(entries[found.id]?.qty ?? 0);
+      setError(null);
+    }, [id])
+  );
+
+  if (!known) {
+    return (
+      <Screen edges={['top', 'bottom']}>
+        <Header title="Comptage" onClose={() => router.back()} />
+        <Muted>Comptage introuvable.</Muted>
+      </Screen>
+    );
+  }
+
+  const doneCount = list.filter((i) => counts[i.id] !== undefined).length;
+  const statusOf = (itemId: string): Status => counts[itemId]?.status ?? 'À compter';
+  const countedN = list.filter((i) => statusOf(i.id) === 'Compté').length;
+  const skippedN = list.filter((i) => statusOf(i.id) === 'Passé').length;
+
+  // ── Comptage déjà terminé ──────────────────────────────────────────────────
+  if (completedAt !== undefined) {
+    const handleRestart = () => {
+      Alert.alert(
+        'Recommencer le comptage',
+        'Les résultats de ce comptage seront effacés. Les ajustements de stock déjà appliqués sont conservés.',
+        [
+          { text: 'Annuler', style: 'cancel' },
+          { text: 'Recommencer', style: 'destructive', onPress: () => { restartCount(id); reload(); } },
+        ]
+      );
+    };
+    return (
+      <Screen edges={['top', 'bottom']}>
+        <Header title={info.name} onClose={() => router.back()} />
+        <Card style={{ gap: 12 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <Icon name="check-circle" color={colors.primary} />
+            <Text style={{ fontSize: 16, fontWeight: '600', flex: 1 }}>Comptage terminé</Text>
+          </View>
+          <Muted>Terminé le {fmtDateTime(completedAt)}</Muted>
+          <Muted>{countedN} article(s) compté(s) · {skippedN} passé(s) · {list.length - doneCount} non compté(s)</Muted>
+          <Btn title="Recommencer" onPress={handleRestart} />
+          <Btn title="Fermer" variant="outline" onPress={() => router.back()} />
+        </Card>
+      </Screen>
+    );
+  }
+
+  if (list.length === 0) {
+    return (
+      <Screen edges={['top', 'bottom']}>
+        <Header title={info.name} onClose={() => router.back()} />
+        <Muted>Aucun article à compter.</Muted>
+      </Screen>
+    );
+  }
+
+  const cur = list[Math.min(idx, list.length - 1)];
+
+  const next = (status: CountEntry['status']) => {
+    if (status === 'Compté' && qty < 0) {
+      setError('La quantité ne peut pas être négative.');
+      return;
+    }
+    const entry: CountEntry = { qty: status === 'Compté' ? qty : 0, status };
+    const err = saveCountEntry(id, cur.id, entry);
+    if (err) { setError(err); return; }
+    const nextCounts = { ...counts, [cur.id]: entry };
+    setCounts(nextCounts);
+    setError(null);
+    setScanError(null);
     if (idx < list.length - 1) {
-      setIdx(idx + 1);
+      const ni = idx + 1;
+      setIdx(ni);
+      setCountIndex(id, ni);
+      setQty(nextCounts[list[ni].id]?.qty ?? 0);
+    } else {
+      setQty(entry.qty);
     }
   };
 
-  const handleJump = (item: typeof list[0]) => {
-    setIdx(list.indexOf(item));
-    setQty(counts[item.id]?.qty ?? 0);
-    setError(null);
+  const finish = () => {
+    const diffs = list.filter((i) => {
+      const e = counts[i.id];
+      return e?.status === 'Compté' && e.qty !== i.qty;
+    }).length;
+
+    const done = (apply: boolean) => {
+      const res = completeCount(id, apply);
+      if (!res.ok) { setError(res.error); return; }
+      setCompletedAt(getCountSession(id)?.completedAt ?? Date.now());
+      Alert.alert(
+        'Comptage terminé',
+        apply
+          ? `${res.adjusted} ajustement(s) de stock appliqué(s).`
+          : 'Le stock n\'a pas été modifié.',
+        [{ text: 'Fermer', onPress: () => router.back() }]
+      );
+    };
+
+    const summary = `${countedN} compté(s) · ${skippedN} passé(s) · ${diffs} écart(s) avec le stock.`;
+    Alert.alert(
+      'Terminer le comptage',
+      summary,
+      diffs > 0
+        ? [
+            { text: 'Annuler', style: 'cancel' },
+            { text: 'Terminer sans ajuster', onPress: () => done(false) },
+            { text: 'Appliquer les écarts au stock', onPress: () => done(true) },
+          ]
+        : [
+            { text: 'Annuler', style: 'cancel' },
+            { text: 'Terminer', onPress: () => done(false) },
+          ]
+    );
   };
 
   const handleFinish = () => {
-    const remaining = list.filter((i) => statusOf(i.id) === 'À compter').length;
+    const remaining = list.length - doneCount;
     if (remaining > 0) {
       Alert.alert(
         'Comptage incomplet',
         `${remaining} article(s) n'ont pas encore été comptés. Terminer quand même ?`,
         [
           { text: 'Continuer le comptage', style: 'cancel' },
-          { text: 'Terminer', style: 'destructive', onPress: () => router.back() },
+          { text: 'Terminer', style: 'destructive', onPress: finish },
         ]
       );
     } else {
-      const counted = list.filter((i) => statusOf(i.id) === 'Compté').length;
-      const skipped = list.filter((i) => statusOf(i.id) === 'Passé').length;
-      Alert.alert(
-        'Comptage terminé',
-        `${counted} article(s) comptés · ${skipped} passé(s).`,
-        [{ text: 'Fermer', onPress: () => router.back() }]
-      );
+      finish();
     }
   };
 
   const isLast = idx === list.length - 1;
   const allDone = doneCount === list.length;
+  const curStatus = statusOf(cur.id);
 
   return (
     <Screen edges={['top', 'bottom']}>
-      {/* Header */}
-      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Quitter le comptage"
-          onPress={handleFinish}
-          style={{ width: 44, height: 44, justifyContent: 'center' }}
-        >
-          <Icon name="x" />
-        </Pressable>
-        <Text style={{ fontSize: 16, fontWeight: '600' }}>{cycleCount.name}</Text>
-        <View style={{ width: 44 }} />
-      </View>
+      <Header title={info.name} onClose={() => router.back()} closeLabel="Quitter (progression enregistrée)" />
 
       {/* Progress */}
       <View>
@@ -103,6 +227,8 @@ export default function Count() {
         <Progress value={doneCount / list.length} />
       </View>
 
+      {scanError && <InlineAlert message={scanError} />}
+
       {/* Current item card */}
       <Card style={{ gap: 14 }}>
         {/* Item info */}
@@ -111,10 +237,10 @@ export default function Count() {
           <View style={{ flex: 1 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 }}>
               <Text style={{ fontSize: 13, color: colors.muted, fontWeight: '600' }}>{idx + 1} / {list.length}</Text>
-              {statusOf(cur.id) !== 'À compter' && (
-                <View style={{ paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999, backgroundColor: statusOf(cur.id) === 'Compté' ? colors.tint : colors.border }}>
-                  <Text style={{ fontSize: 11, fontWeight: '700', color: statusOf(cur.id) === 'Compté' ? colors.primary : colors.muted }}>
-                    {statusOf(cur.id)}
+              {curStatus !== 'À compter' && (
+                <View style={{ paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999, backgroundColor: curStatus === 'Compté' ? colors.tint : colors.border }}>
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: curStatus === 'Compté' ? colors.primary : colors.muted }}>
+                    {curStatus}
                   </Text>
                 </View>
               )}
@@ -124,7 +250,7 @@ export default function Count() {
           </View>
         </View>
 
-        {cycleCount.blind && <Muted>Quantité attendue masquée (comptage à l'aveugle)</Muted>}
+        {info.blind && <Muted>Quantité attendue masquée (comptage à l'aveugle)</Muted>}
 
         <View>
           <Muted style={{ fontWeight: '600', fontSize: 12, marginBottom: 6 }}>Quantité comptée</Muted>
@@ -148,7 +274,12 @@ export default function Count() {
         />
 
         <View style={{ flexDirection: 'row', gap: 8 }}>
-          <Btn title="Scanner" variant="outline" style={{ flex: 1 }} onPress={() => router.push('/scan')} />
+          <Btn
+            title="Scanner"
+            variant="outline"
+            style={{ flex: 1 }}
+            onPress={() => { setScanError(null); router.push({ pathname: '/scan', params: { countId: id } }); }}
+          />
           <Btn title="Passer" variant="outline" style={{ flex: 1 }} onPress={() => next('Passé')} />
         </View>
       </Card>
@@ -156,12 +287,12 @@ export default function Count() {
       {/* Item list */}
       <H2>Articles du comptage</H2>
       <Card style={{ padding: 0, overflow: 'hidden' }}>
-        {list.map((it) => {
+        {list.map((it, i) => {
           const s = statusOf(it.id);
           return (
-            <Row key={it.id} onPress={() => handleJump(it)}>
+            <Row key={it.id} onPress={() => jumpTo(i)}>
               <Thumb size={40} />
-              <Text style={{ flex: 1, fontSize: 14, fontWeight: '600' }}>{it.name}</Text>
+              <Text style={{ flex: 1, fontSize: 14, fontWeight: i === idx ? '700' : '600' }}>{it.name}</Text>
               <Text style={{
                 fontSize: 12,
                 fontWeight: '600',
@@ -180,5 +311,22 @@ export default function Count() {
         onPress={handleFinish}
       />
     </Screen>
+  );
+}
+
+function Header({ title, onClose, closeLabel = 'Fermer' }: { title: string; onClose: () => void; closeLabel?: string }) {
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={closeLabel}
+        onPress={onClose}
+        style={{ width: 44, height: 44, justifyContent: 'center' }}
+      >
+        <Icon name="x" />
+      </Pressable>
+      <Text style={{ fontSize: 16, fontWeight: '600', flex: 1, textAlign: 'center' }} numberOfLines={1}>{title}</Text>
+      <View style={{ width: 44 }} />
+    </View>
   );
 }

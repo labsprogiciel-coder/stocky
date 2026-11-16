@@ -17,13 +17,22 @@ export default function Articles() {
     }, [])
   );
   const folders = ['Tous', ...Array.from(new Set(items.map((i) => i.folder)))];
-  const list = useMemo(() => items.filter((i) => (folder === 'Tous' || i.folder === folder) && i.name.toLowerCase().includes(q.toLowerCase())), [q, folder]);
+  const list = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return items.filter((i) =>
+      (folder === 'Tous' || i.folder === folder) &&
+      (!needle ||
+        i.name.toLowerCase().includes(needle) ||
+        i.sku.toLowerCase().includes(needle) ||
+        (i.barcode ?? '').toLowerCase().includes(needle))
+    );
+  }, [items, q, folder]);
   return (
     <View style={{ flex: 1 }}>
       <Screen>
         <H1>Articles</H1>
         <View style={{ flexDirection: 'row', gap: 8 }}>
-          <TextInput value={q} onChangeText={setQ} placeholder="Rechercher un article" accessibilityLabel="Rechercher un article" placeholderTextColor={colors.muted} style={{ flex: 1, height: 48, paddingHorizontal: 14, borderWidth: 1, borderColor: colors.field, borderRadius: 10, backgroundColor: '#fff', fontSize: 15 }} />
+          <TextInput value={q} onChangeText={setQ} placeholder="Nom, SKU ou code-barres" accessibilityLabel="Rechercher un article" placeholderTextColor={colors.muted} style={{ flex: 1, height: 48, paddingHorizontal: 14, borderWidth: 1, borderColor: colors.field, borderRadius: 10, backgroundColor: '#fff', fontSize: 15 }} />
           <Pressable accessibilityLabel="Scanner un code" onPress={() => router.push('/scan')} style={{ width: 48, height: 48, borderRadius: 10, backgroundColor: '#fff', borderWidth: 1, borderColor: colors.field, alignItems: 'center', justifyContent: 'center' }}>
             <Icon name="maximize" />
           </Pressable>
@@ -32,6 +41,7 @@ export default function Articles() {
           {folders.map((f) => <Chip key={f} label={f} active={f === folder} onPress={() => setFolder(f)} />)}
         </View>
         <Card style={{ padding: 0, overflow: 'hidden' }}>
+          {list.length === 0 && <Muted style={{ padding: 16 }}>Aucun article trouvé.</Muted>}
           {list.map((it) => (
             <Row key={it.id} onPress={() => router.push(`/article/${it.id}`)}>
               <Thumb />
@@ -44,7 +54,7 @@ export default function Articles() {
           ))}
         </Card>
       </Screen>
-      <Pressable accessibilityLabel="Ajouter un article" style={{ position: 'absolute', right: 12, bottom: 20, width: 56, height: 56, borderRadius: 28, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center', elevation: 4 }}>
+      <Pressable accessibilityRole="button" accessibilityLabel="Ajouter un article" onPress={() => router.push('/article/new')} style={{ position: 'absolute', right: 12, bottom: 20, width: 56, height: 56, borderRadius: 28, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center', elevation: 4 }}>
         <Icon name="plus" size={28} color="#fff" />
       </Pressable>
     </View>

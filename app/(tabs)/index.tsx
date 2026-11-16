@@ -3,8 +3,8 @@ import { View, Text, Pressable } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { Screen, H1, H2, Card, Btn, Progress, Row, Thumb, Muted, Icon } from '../../components/ui';
 import { colors } from '../../constants/theme';
-import { cycleCount } from '../../data/mock';
-import { getItems, getMovements, fmtTime } from '../../data/store';
+import { getItems, getMovements, getCycleCount, fmtTime, fmtDateTime } from '../../data/store';
+import { isPersistent } from '../../data/storage';
 
 const actions = [
   { icon: 'maximize', label: 'Scanner', primary: true, go: () => router.push('/scan') },
@@ -16,39 +16,56 @@ const actions = [
 export default function Home() {
   const [items, setItems] = useState(() => getItems());
   const [movements, setMovements] = useState(() => getMovements());
+  const [count, setCount] = useState(() => getCycleCount());
+  const persistent = isPersistent();
 
   // Refresh live data whenever this tab becomes active
   useFocusEffect(
     useCallback(() => {
       setItems(getItems());
       setMovements(getMovements());
+      setCount(getCycleCount());
     }, [])
   );
 
   const lowCount = items.filter((i) => i.qty <= i.min).length;
   const recentMovements = movements.slice(0, 5);
+  const countLabel = count.completedAt !== undefined
+    ? 'Voir le comptage'
+    : count.done > 0 ? 'Reprendre le comptage' : 'Commencer le comptage';
   return (
     <Screen>
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-        <H1>Aujourdhui</H1>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, backgroundColor: '#fff', borderWidth: 1, borderColor: colors.field }}>
-          <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: colors.primary }} />
-          <Text style={{ fontSize: 12, fontWeight: '600' }}>En ligne · 0 en attente</Text>
+        <H1>Aujourd'hui</H1>
+        <View
+          accessible
+          accessibilityLabel={persistent ? 'Hors ligne, données stockées sur l\'appareil' : 'Stockage temporaire, les données seront perdues à la fermeture'}
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, flexShrink: 1, backgroundColor: persistent ? '#fff' : colors.warnBg, borderWidth: 1, borderColor: persistent ? colors.field : colors.warnBg }}
+        >
+          {persistent
+            ? <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: colors.primary }} />
+            : <Icon name="alert-triangle" size={12} color={colors.warnText} />}
+          <Text numberOfLines={1} style={{ fontSize: 12, fontWeight: '600', flexShrink: 1, color: persistent ? colors.text : colors.warnText }}>
+            {persistent ? 'Hors ligne · sur l\'appareil' : 'Stockage temporaire'}
+          </Text>
         </View>
       </View>
 
       <Card style={{ borderColor: colors.primary, borderWidth: 2, gap: 12 }}>
         <Text style={{ fontSize: 12, fontWeight: '700', color: colors.primary }}>COMPTAGE CYCLIQUE · AUJOURD'HUI</Text>
-        <Text style={{ fontSize: 16, fontWeight: '600' }}>{cycleCount.name}</Text>
-        <Muted>{cycleCount.folder} · {cycleCount.total} articles</Muted>
+        <Text style={{ fontSize: 16, fontWeight: '600' }}>{count.name}</Text>
+        <Muted>
+          {count.folder} · {count.total} articles
+          {count.completedAt !== undefined ? ` · Terminé le ${fmtDateTime(count.completedAt)}` : ''}
+        </Muted>
         <View>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
             <Text style={{ fontSize: 13 }}>Progression</Text>
-            <Text style={{ fontSize: 13, fontWeight: '700' }}>{cycleCount.done} / {cycleCount.total}</Text>
+            <Text style={{ fontSize: 13, fontWeight: '700' }}>{count.done} / {count.total}</Text>
           </View>
-          <Progress value={cycleCount.done / cycleCount.total} />
+          <Progress value={count.total > 0 ? count.done / count.total : 0} />
         </View>
-        <Btn title="Reprendre le comptage" onPress={() => router.push(`/count/${cycleCount.id}`)} />
+        <Btn title={countLabel} onPress={() => router.push(`/count/${count.id}`)} />
       </Card>
 
       <View style={{ flexDirection: 'row', gap: 8 }}>

@@ -9,6 +9,7 @@ export default function RootLayout() {
       <Stack screenOptions={{ headerTintColor: colors.primary, headerStyle: { backgroundColor: colors.bg }, headerShadowVisible: false }}>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="scan" options={{ headerShown: false, presentation: 'fullScreenModal' }} />
+        <Stack.Screen name="article/new" options={{ title: 'Nouvel article', headerBackTitle: 'Retour' }} />
         <Stack.Screen name="article/[id]" options={{ title: 'Détail', headerBackTitle: 'Retour' }} />
         <Stack.Screen name="count/[id]" options={{ headerShown: false }} />
       </Stack>
