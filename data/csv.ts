@@ -16,8 +16,20 @@
  *
  * Comptage à l'aveugle en cours : le stock attendu et les écarts ne sont pas
  * exportés (ils restent masqués tant que le comptage n'est pas terminé).
+ *
+ * Articles suivis par numéro de série : après le tableau et ses totaux, une
+ * section « Détail des numéros de série » liste chaque appareil
+ * (Article;Numéro de série;IMEI;Statut;Résultat), avec pour résultat
+ * « Trouvé », « Manquant » (attendu, non trouvé), « Inattendu » (trouvé, non
+ * attendu) ou « Non compté » (article pas encore compté). En comptage à
+ * l'aveugle en cours, seuls les appareils trouvés sont listés (« Trouvé »).
+ * Les articles suivis en quantité ne sont pas concernés. Le total « Articles
+ * avec écart » compte une fois chaque article compté dont l'écart net est non
+ * nul OU qui a un appareil manquant ou inattendu ; « Somme des écarts » reste
+ * la somme des écarts nets.
  */
 import type { CountSession, CountStatus } from './store';
+import { UNIT_STATUS_LABELS, type UnitStatus } from './units';
 
 export type CsvCountInfo = {
   id: string;
@@ -44,7 +56,29 @@ export type BuildCountCsvInput = {
   items: readonly CsvCountItem[];
   /** Date de l'export (epoch ms). */
   exportedAt: number;
+  /**
+   * Écarts des articles suivis par numéro de série (`getCountDiscrepancies()`).
+   * Absent ou vide : pas de section « Détail des numéros de série ».
+   */
+  serialDetails?: readonly CsvSerialDetail[];
 };
+
+/** Champs d'unité utilisés par l'export. */
+export type CsvUnit = { id: string; serial: string; imei?: string; status: UnitStatus };
+
+/** Compatible avec `CountDiscrepancy` (`data/store.ts`). */
+export type CsvSerialDetail = {
+  itemId: string;
+  counted: boolean;
+  expected: readonly CsvUnit[];
+  found: readonly CsvUnit[];
+  missing: readonly CsvUnit[];
+  unexpected: readonly CsvUnit[];
+};
+
+export type SerialResult = 'Trouvé' | 'Manquant' | 'Inattendu' | 'Non compté';
+
+const SERIAL_COLUMNS = ['Article', 'Numéro de série', 'IMEI', 'Statut', 'Résultat'];
 
 export type CountRowStatus = CountStatus | 'À compter';
 
@@ -117,7 +151,7 @@ export function countCsvFilename(id: string, date: Date = new Date()): string {
 }
 
 /** Construit le contenu CSV complet (BOM inclus) d'un comptage. */
-export function buildCountCsv({ count, session, items, exportedAt }: BuildCountCsvInput): string {
+export function buildCountCsv({ count, session, items, exportedAt, serialDetails }: BuildCountCsvInput): string {
   const lines: string[] = [
     csvLine(['Comptage', count.name]),
     csvLine(['Dossier', count.folder]),
@@ -138,6 +172,11 @@ export function buildCountCsv({ count, session, items, exportedAt }: BuildCountC
   let skipped = 0;
   let withDiff = 0;
   let diffSum = 0;
+  // Article suivi par numéro de série : un appareil manquant compensé par un
+  // appareil inattendu laisse un écart net nul, mais c'est bien un écart.
+  const serialMismatch = new Set(
+    (serialDetails ?? []).filter((d) => d.missing.length > 0 || d.unexpected.length > 0).map((d) => d.itemId)
+  );
 
   for (const item of items) {
     const entry = session.entries[item.id];
@@ -150,7 +189,7 @@ export function buildCountCsv({ count, session, items, exportedAt }: BuildCountC
       countedQty = entry.qty;
       if (!hideExpected) {
         diff = entry.qty - expected;
-        if (diff !== 0) withDiff++;
+        if (diff !== 0 || serialMismatch.has(item.id)) withDiff++;
         diffSum += diff;
       }
     } else if (entry?.status === 'Passé') {
@@ -170,5 +209,39 @@ export function buildCountCsv({ count, session, items, exportedAt }: BuildCountC
     csvLine(['Somme des écarts', hideExpected ? undefined : diffSum]),
   );
 
+  const serialLines = buildSerialLines(items, serialDetails ?? [], hideExpected);
+  if (serialLines.length > 0) {
+    lines.push('', csvLine(['Détail des numéros de série']), csvLine(SERIAL_COLUMNS), ...serialLines);
+  }
+
   return BOM + lines.join(EOL) + EOL;
+}
+
+/** Lignes de la section « Détail des numéros de série », dans l'ordre des articles. */
+function buildSerialLines(
+  items: readonly CsvCountItem[],
+  details: readonly CsvSerialDetail[],
+  hideExpected: boolean
+): string[] {
+  const byItem = new Map(details.map((d) => [d.itemId, d]));
+  const out: string[] = [];
+  for (const item of items) {
+    const d = byItem.get(item.id);
+    if (!d) continue;
+    const row = (u: CsvUnit, result: SerialResult) =>
+      [csvCell(item.name), csvIdCell(u.serial), csvIdCell(u.imei ?? ''), csvCell(UNIT_STATUS_LABELS[u.status] ?? u.status), csvCell(result)].join(SEP);
+    if (hideExpected) {
+      for (const u of d.found) out.push(row(u, 'Trouvé'));
+      continue;
+    }
+    const unexpected = new Set(d.unexpected.map((u) => u.id));
+    for (const u of d.found) out.push(row(u, unexpected.has(u.id) ? 'Inattendu' : 'Trouvé'));
+    if (d.counted) {
+      for (const u of d.missing) out.push(row(u, 'Manquant'));
+    } else {
+      const found = new Set(d.found.map((u) => u.id));
+      for (const u of d.expected) if (!found.has(u.id)) out.push(row(u, 'Non compté'));
+    }
+  }
+  return out;
 }

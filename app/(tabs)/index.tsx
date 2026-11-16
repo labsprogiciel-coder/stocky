@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
-import { Screen, H1, H2, Card, Btn, Progress, Row, Thumb, Muted, Icon, EmptyState } from '../../components/ui';
+import { Screen, H1, H2, Card, Btn, Progress, Row, Thumb, Muted, Icon, EmptyState, SerialBadge } from '../../components/ui';
 import { colors } from '../../constants/theme';
 import { getItems, getMovements, getCycleCount, fmtCount, fmtTime, fmtDateTime } from '../../data/store';
 import { isPersistent } from '../../data/storage';
@@ -125,9 +125,13 @@ export default function Home() {
                 return (
                   <Row key={m.id} onPress={() => router.push(`/article/${it.id}`)}>
                     <Thumb photo={it.photo} />
-                    <View style={{ flex: 1 }}>
+                    <View style={{ flex: 1, gap: 2 }}>
                       <Text style={{ fontSize: 15, fontWeight: '600' }}>{it.name}</Text>
-                      <Muted>{m.mode} · {m.mode === 'Entrée' ? '+' : '−'}{m.qty} · {fmtTime(m.ts)}</Muted>
+                      <Muted>
+                        {m.mode} · {m.mode === 'Entrée' ? '+' : '−'}{m.qty}
+                        {m.serial !== undefined ? ` · n° ${m.serial}` : ''} · {fmtTime(m.ts)}
+                      </Muted>
+                      {it.serialized && <SerialBadge />}
                     </View>
                     <Icon name="chevron-right" size={18} color={colors.muted} />
                   </Row>

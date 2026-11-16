@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
-import { Image, Pressable, Text, View, ScrollView, StyleProp, ViewStyle, TextStyle } from 'react-native';
+import { Image, Pressable, Text, TextInput, View, ScrollView, StyleProp, ViewStyle, TextStyle, type TextInputProps } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { colors } from '../constants/theme';
 import { photoUri } from '../data/photos';
+import { UNIT_STATUS_LABELS, type UnitStatus } from '../data/units';
 
 /** Couleur des actions destructives (suppression, réinitialisation). */
 export const DANGER = '#8A2A1B';
@@ -183,8 +184,8 @@ export function EmptyState({
   );
 }
 
-export const Chip = ({ label, active, onPress }: { label: string; active?: boolean; onPress?: () => void }) => (
-  <Pressable onPress={onPress} style={{ minHeight: 44, paddingHorizontal: 18, borderRadius: 999, justifyContent: 'center', backgroundColor: active ? colors.primary : '#fff', borderWidth: active ? 0 : 1, borderColor: colors.field }}>
+export const Chip = ({ label, active, onPress, accessibilityLabel }: { label: string; active?: boolean; onPress?: () => void; accessibilityLabel?: string }) => (
+  <Pressable accessibilityRole="button" accessibilityLabel={accessibilityLabel} accessibilityState={{ selected: !!active }} onPress={onPress} style={{ minHeight: 44, paddingHorizontal: 18, borderRadius: 999, justifyContent: 'center', backgroundColor: active ? colors.primary : '#fff', borderWidth: active ? 0 : 1, borderColor: colors.field }}>
     <Text style={{ fontSize: 14, fontWeight: '600', color: active ? '#fff' : colors.muted }}>{label}</Text>
   </Pressable>
 );
@@ -302,8 +303,102 @@ export function Segmented<T extends string>({ options, value, onChange }: { opti
   );
 }
 
-export const Row = ({ onPress, children }: { onPress?: () => void; children: React.ReactNode }) => (
-  <Pressable onPress={onPress} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, borderTopWidth: 1, borderTopColor: colors.line, minHeight: 64 }}>
+export const Row = ({ onPress, children, accessibilityLabel, accessibilityHint }: { onPress?: () => void; children: React.ReactNode; accessibilityLabel?: string; accessibilityHint?: string }) => (
+  <Pressable
+    onPress={onPress}
+    accessibilityRole={onPress ? 'button' : undefined}
+    accessibilityLabel={accessibilityLabel}
+    accessibilityHint={accessibilityHint}
+    style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, borderTopWidth: 1, borderTopColor: colors.line, minHeight: 64 }}>
     {children}
   </Pressable>
 );
+
+/**
+ * Champ de saisie avec libellé, message d'erreur (prioritaire) ou d'aide.
+ * `accessory` est affiché à droite du champ (ex. bouton « Scanner »).
+ */
+export function TextField({
+  label,
+  error,
+  hint,
+  hintColor,
+  accessory,
+  multiline,
+  ...input
+}: {
+  label: string;
+  error?: string;
+  hint?: string;
+  /** Couleur du message d'aide (ex. validation en direct). */
+  hintColor?: string;
+  accessory?: React.ReactNode;
+} & TextInputProps) {
+  return (
+    <View style={{ gap: 6 }}>
+      <Muted style={{ fontWeight: '600', fontSize: 12 }}>{label}</Muted>
+      <View style={{ flexDirection: 'row', gap: 8, alignItems: 'flex-start' }}>
+        <TextInput
+          accessibilityLabel={label}
+          accessibilityHint={error ?? hint}
+          placeholderTextColor={colors.muted}
+          multiline={multiline}
+          {...input}
+          style={{
+            flex: 1,
+            ...(multiline
+              ? { minHeight: 96, paddingTop: 12, paddingBottom: 12, textAlignVertical: 'top' as const }
+              : { height: 48 }),
+            paddingHorizontal: 14,
+            borderWidth: 1,
+            borderColor: error ? '#B91C1C' : colors.field,
+            borderRadius: 10,
+            backgroundColor: '#fff',
+            fontSize: 15,
+            color: colors.text,
+          }}
+        />
+        {accessory}
+      </View>
+      {error ? (
+        <Text accessibilityLiveRegion="polite" style={{ fontSize: 12, color: '#B91C1C', fontWeight: '500' }}>{error}</Text>
+      ) : hint ? (
+        <Text accessibilityLiveRegion="polite" style={{ fontSize: 12, color: hintColor ?? colors.muted }}>{hint}</Text>
+      ) : null}
+    </View>
+  );
+}
+
+/** Petit badge « N° série » des articles suivis par numéro de série. */
+export function SerialBadge({ style }: { style?: StyleProp<ViewStyle> }) {
+  return (
+    <View
+      accessible
+      accessibilityLabel="Suivi par numéro de série"
+      style={[{ alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999, backgroundColor: colors.tint }, style]}
+    >
+      <Feather name="hash" size={11} color={colors.primary} />
+      <Text style={{ fontSize: 11, fontWeight: '700', color: colors.primary }}>N° série</Text>
+    </View>
+  );
+}
+
+/** Couleurs (fond, texte) de chaque statut d'appareil. */
+export const UNIT_STATUS_COLORS: Readonly<Record<UnitStatus, { bg: string; fg: string }>> = {
+  in_stock: { bg: colors.tint, fg: colors.primary },
+  assigned: { bg: '#E3ECFA', fg: '#1E4E8C' },
+  repair: { bg: colors.warnBg, fg: colors.warnText },
+  retired: { bg: colors.line, fg: colors.muted },
+  missing: { bg: '#FEE2E2', fg: '#B91C1C' },
+};
+
+/** Pastille de statut d'un appareil (« En stock », « Attribué »…). */
+export function UnitStatusChip({ status, count }: { status: UnitStatus; count?: number }) {
+  const c = UNIT_STATUS_COLORS[status];
+  const label = UNIT_STATUS_LABELS[status];
+  return (
+    <View style={{ alignSelf: 'flex-start', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, backgroundColor: c.bg }}>
+      <Text style={{ fontSize: 11, fontWeight: '700', color: c.fg }}>{count !== undefined ? `${label} · ${count}` : label}</Text>
+    </View>
+  );
+}

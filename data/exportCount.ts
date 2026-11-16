@@ -10,8 +10,9 @@
 import { Alert, Share } from 'react-native';
 import type * as FileSystemModule from 'expo-file-system';
 import type * as SharingModule from 'expo-sharing';
+import { assetsCsvFilename, buildAssetsCsv } from './assetsCsv';
 import { buildCountCsv, countCsvFilename } from './csv';
-import { getCountItems, getCountSession, getCycleCount, hasCountSession } from './store';
+import { getCountDiscrepancies, getCountItems, getCountSession, getCycleCount, getItems, getUnits, hasCountSession } from './store';
 
 const MIME = 'text/csv';
 const UTI = 'public.comma-separated-values-text';
@@ -89,6 +90,7 @@ export async function exportCountCsv(id: string): Promise<void> {
       session: hasCountSession(id) ? session : { entries: session.entries },
       items,
       exportedAt: now.getTime(),
+      serialDetails: getCountDiscrepancies(id),
     });
     const title = `Export CSV – ${info.name}`;
 
@@ -99,6 +101,38 @@ export async function exportCountCsv(id: string): Promise<void> {
     await Share.share({ message: csv.replace(/^﻿/, ''), title });
   } catch (e) {
     console.warn('[export] Export CSV impossible.', e);
+    Alert.alert('Export impossible', "Le fichier CSV n'a pas pu être créé ou partagé. Réessayez.");
+  }
+}
+
+/**
+ * Exporte les appareils (numéros de série) au format CSV d'import de Jira
+ * Service Management Assets et ouvre la feuille de partage : tous les
+ * appareils, ou seulement ceux de l'article `itemId`.
+ * Ne lève jamais : une erreur est signalée par une alerte.
+ */
+export async function exportAssetsCsv(itemId?: string): Promise<void> {
+  try {
+    const units = getUnits(itemId);
+    if (units.length === 0) {
+      Alert.alert(
+        'Export impossible',
+        itemId === undefined
+          ? "Aucun appareil à exporter : ajoutez des numéros de série à un article suivi par numéro de série."
+          : "Aucun appareil à exporter pour cet article : ajoutez d'abord ses numéros de série."
+      );
+      return;
+    }
+    const now = new Date();
+    const items = getItems();
+    const csv = buildAssetsCsv(units, items);
+    const itemName = itemId === undefined ? undefined : items.find((i) => i.id === itemId)?.name;
+    const title = itemName ? `Export CSV – ${itemName} (Jira Assets)` : 'Export CSV – Appareils (Jira Assets)';
+    const uri = await writeCacheFile(assetsCsvFilename(now), csv);
+    if (uri && (await shareFile(uri, title))) return;
+    await Share.share({ message: csv, title });
+  } catch (e) {
+    console.warn('[export] Export CSV des appareils impossible.', e);
     Alert.alert('Export impossible', "Le fichier CSV n'a pas pu être créé ou partagé. Réessayez.");
   }
 }
