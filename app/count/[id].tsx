@@ -17,6 +17,7 @@ import {
   saveCountEntry,
   setCountIndex,
 } from '../../data/store';
+import { exportCountCsv } from '../../data/exportCount';
 
 type Status = CountEntry['status'] | 'À compter';
 
@@ -33,6 +34,27 @@ export default function Count() {
   const [completedAt, setCompletedAt] = useState<number | undefined>(() => getCountSession(id)?.completedAt);
   const [error, setError] = useState<string | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+
+  const handleExport = async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      await exportCountCsv(id);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const exportBtn = (
+    <Btn
+      title={exporting ? 'Export en cours…' : 'Exporter (CSV)'}
+      variant="outline"
+      accessibilityLabel="Exporter le comptage au format CSV"
+      disabled={exporting}
+      onPress={handleExport}
+    />
+  );
 
   const reload = () => {
     const session = getCountSession(id);
@@ -119,6 +141,7 @@ export default function Count() {
           <Muted>Terminé le {fmtDateTime(completedAt)}</Muted>
           <Muted>{countedN} article(s) compté(s) · {skippedN} passé(s) · {list.length - doneCount} non compté(s)</Muted>
           <Btn title="Recommencer" onPress={handleRestart} />
+          {exportBtn}
           <Btn title="Fermer" variant="outline" onPress={() => router.back()} />
         </Card>
       </Screen>
@@ -310,6 +333,7 @@ export default function Count() {
         variant="outline"
         onPress={handleFinish}
       />
+      {exportBtn}
     </Screen>
   );
 }

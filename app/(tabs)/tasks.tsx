@@ -4,6 +4,7 @@ import { router, useFocusEffect } from 'expo-router';
 import { Screen, H1, Card, Chip, Btn, Progress, Muted, Icon } from '../../components/ui';
 import { colors } from '../../constants/theme';
 import { getCycleCount, fmtDateTime, type CycleCountInfo } from '../../data/store';
+import { exportCountCsv } from '../../data/exportCount';
 
 function CountHeader({ count, done }: { count: CycleCountInfo; done?: boolean }) {
   return (
@@ -22,6 +23,7 @@ function CountHeader({ count, done }: { count: CycleCountInfo; done?: boolean })
 export default function Tasks() {
   const [tab, setTab] = useState<'todo' | 'done'>('todo');
   const [count, setCount] = useState(() => getCycleCount());
+  const [exporting, setExporting] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -31,6 +33,15 @@ export default function Tasks() {
 
   const completed = count.completedAt !== undefined;
   const open = () => router.push(`/count/${count.id}`);
+  const handleExport = async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      await exportCountCsv(count.id);
+    } finally {
+      setExporting(false);
+    }
+  };
 
   return (
     <Screen>
@@ -62,6 +73,13 @@ export default function Tasks() {
           <Muted>{count.folder} · {count.done} / {count.total} articles traités</Muted>
           <Muted>Terminé le {fmtDateTime(count.completedAt)}</Muted>
           <Btn title="Voir le comptage" variant="outline" onPress={open} />
+          <Btn
+            title={exporting ? 'Export en cours…' : 'Exporter (CSV)'}
+            variant="outline"
+            accessibilityLabel="Exporter le comptage au format CSV"
+            disabled={exporting}
+            onPress={handleExport}
+          />
         </Card>
       ) : (
         <Card><Muted>Aucune tâche terminée.</Muted></Card>

@@ -1,0 +1,6 @@
+# pnpm 11 (used by EAS Build): approve install scripts per package.
+allowBuilds:
+  "@sentry/cli": true
+# pnpm 10 equivalent.
+onlyBuiltDependencies:
+  - "@sentry/cli"
