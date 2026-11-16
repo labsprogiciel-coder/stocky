@@ -17,7 +17,9 @@
  * Au chargement, ce module enregistre ses fonctions de suppression auprès de
  * `data/store.ts` (`setPhotoFileHooks`) : le store supprime ainsi le fichier
  * d'un article supprimé ou dont la photo est remplacée, et toutes les photos
- * lors d'une réinitialisation, sans importer lui-même de module natif.
+ * lors d'une réinitialisation, sans importer lui-même de module natif ; il
+ * vérifie aussi qu'une photo existe (`hasPhoto`) avant de garder sa référence
+ * lors de la restauration d'une sauvegarde.
  * `app/_layout.tsx` importe ce module pour garantir cet enregistrement.
  */
 import { Alert, Linking } from 'react-native';
@@ -233,4 +235,4 @@ export async function pickPhoto(source: PhotoSource, itemId?: string): Promise<s
   }
 }
 
-setPhotoFileHooks({ deletePhoto, deleteAllPhotos });
+setPhotoFileHooks({ deletePhoto, deleteAllPhotos, hasPhoto: (name) => photoUri(name) !== null });

@@ -13,7 +13,8 @@
  *
  * Injection de formules : un texte commençant par `=`, `+`, `@`, tabulation
  * ou retour chariot est préfixé d'une apostrophe. Le `-` n'est volontairement
- * PAS neutralisé : un numéro de série peut commencer par un tiret.
+ * PAS neutralisé : un numéro de série peut commencer par un tiret ; sauf s'il
+ * est suivi d'un opérateur de formule (= + @ ( | ! & guillemets).
  */
 import { UNIT_STATUS_JIRA_LABELS, serialKey, type Unit } from './units';
 
@@ -28,7 +29,9 @@ const SEP = ',';
 const EOL = '\r\n';
 
 function neutralize(text: string): string {
-  return /^[=+@\t\r]/.test(text) ? `'${text}` : text;
+  // `-` seul permis en tête ; suivi d'un opérateur de formule, il est neutralisé
+  // aussi (données anciennes ou restaurées : la saisie et l'import le refusent).
+  return /^[=+@\t\r]/.test(text) || /^-.*[=+@(|!&"']/.test(text) ? `'${text}` : text;
 }
 
 function quote(field: string): string {

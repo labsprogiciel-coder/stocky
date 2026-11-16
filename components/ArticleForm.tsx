@@ -21,7 +21,8 @@ import { View, Text, ScrollView, Switch } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Card, Btn, Chip, Muted, ItemPhoto, TextField as Field, Alert as InlineAlert } from './ui';
 import { colors } from '../constants/theme';
-import { createItem, fmtCount, getItems, updateItem, type Item, type NewItemInput } from '../data/store';
+import { createItem, fmtCount, getItems, itemLimitError, updateItem, type Item, type NewItemInput } from '../data/store';
+import { ProNotice } from './ProNotice';
 import { deletePhoto, pickPhoto, type PhotoSource } from '../data/photos';
 
 type FieldKey = keyof NewItemInput;
@@ -66,6 +67,10 @@ export function ArticleForm({ item, initialBarcode, initialSerialized, onDone }:
   const [picking, setPicking] = useState(false);
   const [errors, setErrors] = useState<Errors>({});
   const [formError, setFormError] = useState<string | null>(null);
+  // Version gratuite : limite d'articles atteinte (affichée dès l'ouverture, et au refus du store).
+  const [limitError, setLimitError] = useState<string | null>(() => (editing ? null : itemLimitError()));
+  // Limite déjà atteinte à l'ouverture : encart en haut seulement (pas de doublon près du bouton).
+  const [limitAtOpen] = useState(() => limitError !== null);
 
   // Verrou synchrone contre le double appui sur le bouton d'enregistrement.
   const submittingRef = useRef(false);
@@ -137,6 +142,11 @@ export function ArticleForm({ item, initialBarcode, initialSerialized, onDone }:
       : createItem({ name, barcode, sku, folder, qty: nQty, min: nMin, price: nPrice, serialized, ...(photo !== null ? { photo } : {}) });
     if (res.error !== undefined) {
       submittingRef.current = false;
+      if ('limit' in res && res.limit === 'items') {
+        setLimitError(res.error);
+        setFormError(null);
+        return;
+      }
       const field = res.field;
       if (field !== undefined && field !== 'id') setErrors({ [field]: res.error });
       setFormError(res.error);
@@ -154,6 +164,7 @@ export function ArticleForm({ item, initialBarcode, initialSerialized, onDone }:
         keyboardShouldPersistTaps="handled"
         automaticallyAdjustKeyboardInsets
       >
+        {limitError && limitAtOpen && <ProNotice message={limitError} />}
         <Card style={{ gap: 10 }}>
           <Muted style={{ fontWeight: '600', fontSize: 12 }}>Photo</Muted>
           <ItemPhoto
@@ -319,6 +330,7 @@ export function ArticleForm({ item, initialBarcode, initialSerialized, onDone }:
         </Card>
 
         {formError && <InlineAlert message={formError} />}
+        {limitError && !limitAtOpen && <ProNotice message={limitError} />}
 
         <Btn
           title={editing ? 'Enregistrer les modifications' : "Créer l'article"}

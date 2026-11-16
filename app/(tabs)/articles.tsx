@@ -1,21 +1,24 @@
 import { useCallback, useMemo, useState } from 'react';
 import { View, TextInput, Pressable, Text } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
-import { Screen, H1, Card, Chip, Row, Thumb, Muted, Icon, EmptyState, SerialBadge } from '../../components/ui';
+import { Screen, H1, Card, Chip, Row, Thumb, Muted, Icon, EmptyState, SerialBadge, Btn } from '../../components/ui';
 import { colors } from '../../constants/theme';
-import { fmtCount, getItems, getUnits, serialKey } from '../../data/store';
+import { fmtCount, getItems, getUnits, isProActive, serialKey } from '../../data/store';
 
 export default function Articles() {
   const [items, setItems] = useState(() => getItems());
   const [units, setUnits] = useState(() => getUnits());
   const [q, setQ] = useState('');
   const [folder, setFolder] = useState('Tous');
+  // Pas de vérification de licence au premier rendu : mise à jour au focus.
+  const [pro, setPro] = useState(true);
 
   // Refresh when tab gains focus (after scan / stock adjustment)
   useFocusEffect(
     useCallback(() => {
       setItems(getItems());
       setUnits(getUnits());
+      setPro(isProActive());
     }, [])
   );
   const folders = ['Tous', ...Array.from(new Set(items.map((i) => i.folder)))];
@@ -52,6 +55,7 @@ export default function Articles() {
       <Screen>
         <H1>Articles</H1>
         {!hasItems ? (
+          <>
           <EmptyState
             icon="package"
             title="Aucun article"
@@ -59,12 +63,25 @@ export default function Articles() {
             primaryAction={{ label: 'Ajouter un article', onPress: () => router.push('/article/new'), accessibilityHint: 'Ouvre le formulaire de création d\'article' }}
             secondaryAction={{ label: 'Scanner', onPress: () => router.push('/scan'), accessibilityLabel: 'Scanner un code', accessibilityHint: 'Ouvre le scanner de codes-barres' }}
           />
+          <Btn
+            title={pro ? 'Importer depuis Excel' : 'Importer depuis Excel · Pro'}
+            variant="outline"
+            onPress={() => router.push('/import')}
+            accessibilityHint="Importe des articles et des appareils depuis un fichier Excel ou CSV"
+          />
+          </>
         ) : (
           <>
             <View style={{ flexDirection: 'row', gap: 8 }}>
               <TextInput value={q} onChangeText={setQ} placeholder="Nom, SKU, code-barres, n° de série" accessibilityLabel="Rechercher un article" placeholderTextColor={colors.muted} style={{ flex: 1, height: 48, paddingHorizontal: 14, borderWidth: 1, borderColor: colors.field, borderRadius: 10, backgroundColor: '#fff', fontSize: 15 }} />
               <Pressable accessibilityRole="button" accessibilityLabel="Scanner un code" onPress={() => router.push('/scan')} style={{ width: 48, height: 48, borderRadius: 10, backgroundColor: '#fff', borderWidth: 1, borderColor: colors.field, alignItems: 'center', justifyContent: 'center' }}>
                 <Icon name="maximize" />
+              </Pressable>
+              <Pressable accessibilityRole="button" accessibilityLabel={pro ? 'Importer depuis Excel' : 'Importer depuis Excel, réservé à Stockly Pro'} accessibilityHint="Importe des articles et des appareils depuis un fichier Excel ou CSV" onPress={() => router.push('/import')} style={{ width: 48, height: 48, borderRadius: 10, backgroundColor: '#fff', borderWidth: 1, borderColor: colors.field, alignItems: 'center', justifyContent: 'center' }}>
+                <Icon name="upload" />
+                {!pro && (
+                  <Text style={{ position: 'absolute', top: 2, right: 3, fontSize: 9, fontWeight: '800', color: colors.warnText }}>PRO</Text>
+                )}
               </Pressable>
             </View>
             <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>

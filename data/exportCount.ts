@@ -12,7 +12,8 @@ import type * as FileSystemModule from 'expo-file-system';
 import type * as SharingModule from 'expo-sharing';
 import { assetsCsvFilename, buildAssetsCsv } from './assetsCsv';
 import { buildCountCsv, countCsvFilename } from './csv';
-import { getCountDiscrepancies, getCountItems, getCountSession, getCycleCount, getItems, getUnits, hasCountSession } from './store';
+import { articlesCsvFilename, buildArticlesCsv, buildDevicesCsv, devicesCsvFilename } from './devicesCsv';
+import { PRO_FEATURE_ERROR, getCountDiscrepancies, getCountItems, getCountSession, getCycleCount, getItems, getUnits, hasCountSession, isProActive } from './store';
 
 const MIME = 'text/csv';
 const UTI = 'public.comma-separated-values-text';
@@ -98,7 +99,7 @@ export async function exportCountCsv(id: string): Promise<void> {
     if (uri && (await shareFile(uri, title))) return;
 
     // Repli : partage du contenu en texte (sans BOM).
-    await Share.share({ message: csv.replace(/^﻿/, ''), title });
+    await Share.share({ message: csv.replace(/^\ufeff/, ''), title });
   } catch (e) {
     console.warn('[export] Export CSV impossible.', e);
     Alert.alert('Export impossible', "Le fichier CSV n'a pas pu être créé ou partagé. Réessayez.");
@@ -109,10 +110,15 @@ export async function exportCountCsv(id: string): Promise<void> {
  * Exporte les appareils (numéros de série) au format CSV d'import de Jira
  * Service Management Assets et ouvre la feuille de partage : tous les
  * appareils, ou seulement ceux de l'article `itemId`.
+ * Réservé à Stockly Pro (les écrans proposent Pro avant d'appeler cette fonction).
  * Ne lève jamais : une erreur est signalée par une alerte.
  */
 export async function exportAssetsCsv(itemId?: string): Promise<void> {
   try {
+    if (!isProActive()) {
+      Alert.alert('Stockly Pro', `${PRO_FEATURE_ERROR} L'export pour Jira Assets s'active avec un code d'activation (Profil › Stockly Pro).`);
+      return;
+    }
     const units = getUnits(itemId);
     if (units.length === 0) {
       Alert.alert(
@@ -133,6 +139,63 @@ export async function exportAssetsCsv(itemId?: string): Promise<void> {
     await Share.share({ message: csv, title });
   } catch (e) {
     console.warn('[export] Export CSV des appareils impossible.', e);
+    Alert.alert('Export impossible', "Le fichier CSV n'a pas pu être créé ou partagé. Réessayez.");
+  }
+}
+
+/** Écrit `csv` dans le cache et ouvre la feuille de partage (repli : partage du texte, sans BOM). */
+async function shareCsv(name: string, csv: string, title: string): Promise<void> {
+  const uri = await writeCacheFile(name, csv);
+  if (uri && (await shareFile(uri, title))) return;
+  await Share.share({ message: csv.replace(/^\ufeff/, ''), title });
+}
+
+const proAlert = (feature: string) =>
+  Alert.alert('Stockly Pro', `${PRO_FEATURE_ERROR} ${feature} s'active avec un code d'activation (Profil › Stockly Pro).`);
+
+/**
+ * Exporte tous les appareils (numéros de série) en CSV pour Excel
+ * (`data/devicesCsv.ts`) et ouvre la feuille de partage. Réservé à Stockly Pro.
+ * Ne lève jamais : une erreur est signalée par une alerte.
+ */
+export async function exportDevicesExcel(): Promise<void> {
+  try {
+    if (!isProActive()) {
+      proAlert("L'export Excel");
+      return;
+    }
+    const units = getUnits();
+    if (units.length === 0) {
+      Alert.alert('Export impossible', 'Aucun appareil à exporter : ajoutez des numéros de série à un article suivi par numéro de série.');
+      return;
+    }
+    const now = new Date();
+    await shareCsv(devicesCsvFilename(now), buildDevicesCsv(units, getItems()), 'Export Excel – Appareils');
+  } catch (e) {
+    console.warn('[export] Export Excel des appareils impossible.', e);
+    Alert.alert('Export impossible', "Le fichier CSV n'a pas pu être créé ou partagé. Réessayez.");
+  }
+}
+
+/**
+ * Exporte les articles suivis en quantité en CSV pour Excel et ouvre la
+ * feuille de partage. Réservé à Stockly Pro. Ne lève jamais.
+ */
+export async function exportArticlesExcel(): Promise<void> {
+  try {
+    if (!isProActive()) {
+      proAlert("L'export Excel");
+      return;
+    }
+    const items = getItems();
+    if (!items.some((i) => !i.serialized)) {
+      Alert.alert('Export impossible', 'Aucun article suivi en quantité à exporter (les appareils ont leur propre export).');
+      return;
+    }
+    const now = new Date();
+    await shareCsv(articlesCsvFilename(now), buildArticlesCsv(items), 'Export Excel – Articles');
+  } catch (e) {
+    console.warn('[export] Export Excel des articles impossible.', e);
     Alert.alert('Export impossible', "Le fichier CSV n'a pas pu être créé ou partagé. Réessayez.");
   }
 }
