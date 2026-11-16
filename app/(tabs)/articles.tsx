@@ -70,7 +70,7 @@ export default function Articles() {
               <Card style={{ padding: 0, overflow: 'hidden' }}>
                 {list.map((it) => (
                   <Row key={it.id} onPress={() => router.push(`/article/${it.id}`)}>
-                    <Thumb />
+                    <Thumb photo={it.photo} />
                     <View style={{ flex: 1 }}>
                       <Text style={{ fontSize: 15, fontWeight: '600' }}>{it.name}</Text>
                       <Muted>{it.folder} · {fmtCount(it.qty, 'unité', 'unités')}</Muted>

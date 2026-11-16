@@ -1,9 +1,9 @@
 import { useState, useCallback } from 'react';
 import { View, Text, Alert } from 'react-native';
 import { router, useLocalSearchParams, Stack, useFocusEffect } from 'expo-router';
-import { Screen, Card, Btn, Stepper, Muted, Icon, EmptyState, Alert as InlineAlert } from '../../components/ui';
+import { Screen, Card, Btn, Stepper, Muted, Icon, EmptyState, ItemPhoto, Alert as InlineAlert } from '../../components/ui';
 import { colors } from '../../constants/theme';
-import { getItem, adjustStock } from '../../data/store';
+import { getItem, adjustStock, deleteItem } from '../../data/store';
 
 const BARS = [2,1,1,3,1,2,2,1,3,1,1,2,1,1,3,2,1,2,1,1,3,1,2,1,1,2,3,1,1,2];
 
@@ -78,6 +78,28 @@ export default function ArticleDetail() {
     setSaved(false);
   };
 
+  const handleDelete = () => {
+    Alert.alert(
+      "Supprimer l'article",
+      `« ${item.name} » sera supprimé de cet appareil, ainsi que ${item.photo ? 'sa photo, ' : ''}tous ses mouvements de stock et ses saisies dans les comptages (y compris les comptages terminés et leur export CSV). Cette action est irréversible.`,
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Supprimer',
+          style: 'destructive',
+          onPress: () => {
+            const res = deleteItem(item.id);
+            if (!res.ok) {
+              setError(res.error);
+              return;
+            }
+            router.dismissTo('/articles');
+          },
+        },
+      ]
+    );
+  };
+
   const diff = qty - item.qty;
   const diffLabel =
     diff === 0 ? null : diff > 0 ? `+${diff} Entrée` : `${diff} Sortie`;
@@ -86,19 +108,12 @@ export default function ArticleDetail() {
     <>
       <Stack.Screen options={{ title: item.name }} />
       <Screen hasHeader>
-        {/* Photo placeholder */}
-        <View style={{ height: 200, borderRadius: 14, borderWidth: 2, borderStyle: 'dashed', borderColor: '#C9C6BB', backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center' }}>
-          <Muted>Photo de l'article</Muted>
-        </View>
-
-        {/* Thumbnails */}
-        <View style={{ flexDirection: 'row', gap: 8 }}>
-          {[0, 1, 2, 3].map((n) => (
-            <View key={n} style={{ flex: 1, aspectRatio: 1, borderRadius: 10, alignItems: 'center', justifyContent: 'center', backgroundColor: n === 0 ? colors.tint : '#fff', borderWidth: n === 0 ? 2 : 1, borderColor: n === 0 ? colors.primary : colors.field }}>
-              <Icon name="image" color={n === 0 ? colors.primary : colors.muted} />
-            </View>
-          ))}
-        </View>
+        {/* Photo */}
+        <ItemPhoto
+          photo={item.photo}
+          accessibilityLabel={`Photo de ${item.name}`}
+          emptyLabel="Aucune photo — ajoutez-en une avec « Modifier »"
+        />
 
         {/* Stock adjustment card */}
         <Card>
@@ -151,6 +166,22 @@ export default function ArticleDetail() {
           onPress={handleAdjust}
           disabled={!canSave}
         />
+
+        <View style={{ gap: 8, marginTop: 8 }}>
+          <Btn
+            title="Modifier"
+            variant="outline"
+            accessibilityLabel="Modifier l'article"
+            accessibilityHint="Modifier le nom, les codes, le dossier, le seuil, le prix et la photo"
+            onPress={() => router.push(`/article/edit/${item.id}`)}
+          />
+          <Btn
+            title="Supprimer l'article"
+            variant="danger"
+            accessibilityHint="Demande une confirmation avant de supprimer l'article et son historique"
+            onPress={handleDelete}
+          />
+        </View>
       </Screen>
     </>
   );

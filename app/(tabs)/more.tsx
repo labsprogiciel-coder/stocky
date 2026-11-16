@@ -118,7 +118,7 @@ export default function Profile() {
   const handleReset = () => {
     Alert.alert(
       'Réinitialiser les données',
-      'Tous les articles, mouvements et comptages enregistrés sur cet appareil seront supprimés, et les préférences remises par défaut. L\'application sera vide. Cette action est irréversible.',
+      'Tous les articles, photos, mouvements et comptages enregistrés sur cet appareil seront supprimés, et les préférences remises par défaut. L\'application sera vide. Cette action est irréversible.',
       [
         { text: 'Annuler', style: 'cancel' },
         {
@@ -138,7 +138,7 @@ export default function Profile() {
   const handleLoadSample = () => {
     Alert.alert(
       'Charger les données d\'exemple',
-      'Les articles, mouvements et comptages actuels seront supprimés et remplacés par des données d\'exemple. Vos préférences sont conservées. Cette action est irréversible.',
+      'Les articles, photos, mouvements et comptages actuels seront supprimés et remplacés par des données d\'exemple. Vos préférences sont conservées. Cette action est irréversible.',
       [
         { text: 'Annuler', style: 'cancel' },
         {

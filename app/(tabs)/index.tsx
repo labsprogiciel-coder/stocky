@@ -124,7 +124,7 @@ export default function Home() {
                 if (!it) return null;
                 return (
                   <Row key={m.id} onPress={() => router.push(`/article/${it.id}`)}>
-                    <Thumb />
+                    <Thumb photo={it.photo} />
                     <View style={{ flex: 1 }}>
                       <Text style={{ fontSize: 15, fontWeight: '600' }}>{it.name}</Text>
                       <Muted>{m.mode} · {m.mode === 'Entrée' ? '+' : '−'}{m.qty} · {fmtTime(m.ts)}</Muted>

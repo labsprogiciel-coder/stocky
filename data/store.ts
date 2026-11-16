@@ -7,11 +7,29 @@
  * tous invalides, l'application démarre avec un inventaire vide (préférences
  * conservées). Les données d'exemple de `data/mock.ts` ne sont chargées qu'à
  * la demande, via `loadSampleData()`.
+ *
+ * Photos des articles : `Item.photo` ne contient que le NOM du fichier
+ * (jamais un chemin absolu, qui change sur iOS entre deux mises à jour). Les
+ * fichiers sont gérés par `data/photos.ts`, qui enregistre ses fonctions de
+ * suppression via `setPhotoFileHooks()`. Ce module n'importe ainsi aucun
+ * module natif de fichiers et reste exécutable hors de React Native (tests) :
+ * sans hooks enregistrés, la suppression des fichiers est simplement ignorée.
  */
 import { items as sampleItems, recent as sampleRecent } from './mock';
 import { KEYS, clearAll, isPersistent, readJSON, writeJSON } from './storage';
 
-export type Item = { id: string; name: string; sku: string; barcode?: string; folder: string; qty: number; min: number; price: number };
+export type Item = {
+  id: string;
+  name: string;
+  sku: string;
+  barcode?: string;
+  folder: string;
+  qty: number;
+  min: number;
+  price: number;
+  /** Nom du fichier photo (dossier `photos` des documents de l'app), jamais un URI. */
+  photo?: string;
+};
 
 export type MovementMode = 'Entrée' | 'Sortie';
 
@@ -70,11 +88,42 @@ export type NewItemInput = {
   qty: number;
   min: number;
   price: number;
+  /** Nom du fichier photo renvoyé par `pickPhoto()` (facultatif). */
+  photo?: string;
 };
 
 export type CreateItemResult =
   | { item: Item; error?: undefined; field?: undefined }
   | { item?: undefined; error: string; field?: keyof NewItemInput };
+
+/**
+ * Champs modifiables d'un article. Le stock (`qty`) n'en fait pas partie :
+ * il ne change que via `adjustStock`/`commitMovement`, pour que chaque
+ * changement soit tracé par un mouvement.
+ * - `barcode: ''` retire le code-barres ; `sku: ''` génère une nouvelle référence ;
+ * - `photo: null` retire la photo.
+ */
+export type UpdateItemPatch = {
+  name?: string;
+  barcode?: string;
+  sku?: string;
+  folder?: string;
+  min?: number;
+  price?: number;
+  photo?: string | null;
+};
+
+export type UpdateItemResult =
+  | { item: Item; error?: undefined; field?: undefined }
+  | { item?: undefined; error: string; field?: keyof UpdateItemPatch | 'id' };
+
+export type DeleteItemResult = { ok: true } | { ok: false; error: string };
+
+/** Suppression des fichiers photo, fournie par `data/photos.ts`. */
+export type PhotoFileHooks = {
+  deletePhoto: (name: string) => void;
+  deleteAllPhotos: () => void;
+};
 
 export type CompleteCountResult =
   | { ok: true; adjusted: number }
@@ -105,6 +154,14 @@ const isNonEmptyString = (v: unknown): v is string => typeof v === 'string' && v
 const isMode = (v: unknown): v is MovementMode => v === 'Entrée' || v === 'Sortie';
 const isCountStatus = (v: unknown): v is CountStatus => v === 'Compté' || v === 'Passé';
 
+/**
+ * Nom de fichier photo valide : un simple nom (pas de séparateur de chemin,
+ * pas de `.`/`..`), jamais un URI ou un chemin absolu.
+ */
+export function isPhotoName(v: unknown): v is string {
+  return typeof v === 'string' && v.length <= 200 && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(v);
+}
+
 function isItem(v: unknown): v is Item {
   return (
     isRecord(v) &&
@@ -115,8 +172,19 @@ function isItem(v: unknown): v is Item {
     typeof v.folder === 'string' &&
     isFiniteNumber(v.qty) && v.qty >= 0 &&
     isFiniteNumber(v.min) && v.min >= 0 &&
-    isFiniteNumber(v.price) && v.price >= 0
+    isFiniteNumber(v.price) && v.price >= 0 &&
+    (v.photo === undefined || isPhotoName(v.photo))
   );
+}
+
+/**
+ * Retire un champ `photo` invalide (non-chaîne ou chemin) d'un article stocké
+ * plutôt que de rejeter l'article. Renvoie la valeur d'origine sinon.
+ */
+function withoutInvalidPhoto(v: unknown): unknown {
+  if (!isRecord(v) || v.photo === undefined || isPhotoName(v.photo)) return v;
+  const { photo: _dropped, ...rest } = v;
+  return rest;
 }
 
 function isMovement(v: unknown): v is Movement {
@@ -188,6 +256,31 @@ type State = {
 
 let _state: State | null = null;
 const _pendingCountScans = new Map<string, string>();
+let _photoHooks: PhotoFileHooks | null = null;
+
+/** Enregistré par `data/photos.ts` au chargement du module. */
+export function setPhotoFileHooks(hooks: PhotoFileHooks | null): void {
+  _photoHooks = hooks;
+}
+
+/** Supprime un fichier photo (best effort, ne lève jamais). */
+function removePhotoFile(name: string | undefined): void {
+  if (!name) return;
+  try {
+    _photoHooks?.deletePhoto(name);
+  } catch (e) {
+    console.warn('[store] Suppression de la photo impossible.', e);
+  }
+}
+
+/** Supprime toutes les photos (best effort, ne lève jamais). */
+function removeAllPhotoFiles(): void {
+  try {
+    _photoHooks?.deleteAllPhotos();
+  } catch (e) {
+    console.warn('[store] Suppression des photos impossible.', e);
+  }
+}
 
 let _seq = 0;
 /** Identifiant unique, même pour plusieurs appels dans la même milliseconde. */
@@ -226,7 +319,9 @@ function loadPrefs(): Prefs {
 function loadState(): State {
   const prefs = loadPrefs();
   const rawItems = readJSON<unknown>(KEYS.items, null);
-  const items = validList(rawItems, isItem);
+  const cleanedItems = Array.isArray(rawItems) ? rawItems.map(withoutInvalidPhoto) : rawItems;
+  const photoDropped = Array.isArray(rawItems) && Array.isArray(cleanedItems) && cleanedItems.some((x, i) => x !== rawItems[i]);
+  const items = validList(cleanedItems, isItem);
   // Absents (premier lancement), illisibles, ou liste non vide sans aucune
   // entrée valide : on démarre avec un inventaire vide, en conservant les
   // préférences, et on l'enregistre pour qu'un relancement reste vide.
@@ -247,7 +342,7 @@ function loadState(): State {
     .slice(0, MAX_MOVEMENTS);
   // Entrées invalides écartées : on réécrit les listes nettoyées au chargement.
   const dirty: Part[] = [];
-  if (!Array.isArray(rawItems) || items.length !== rawItems.length) dirty.push('items');
+  if (!Array.isArray(rawItems) || items.length !== rawItems.length || photoDropped) dirty.push('items');
   if (!Array.isArray(rawMovements) || movements.length !== rawMovements.length) dirty.push('movements');
 
   const sessions: Record<string, CountSession> = {};
@@ -279,7 +374,8 @@ function state(): State {
 
 type Part = 'items' | 'movements' | 'sessions' | 'prefs';
 
-function persist(...parts: Part[]) {
+/** Écrit les parties demandées ; renvoie `false` si une écriture a échoué. */
+function persist(...parts: Part[]): boolean {
   const s = state();
   let ok = true;
   for (const p of parts) {
@@ -289,9 +385,10 @@ function persist(...parts: Part[]) {
     else ok = writeJSON(KEYS.prefs, s.prefs) && ok;
   }
   // N'avancer la date du dernier enregistrement que si tout a été écrit.
-  if (!ok) return;
+  if (!ok) return false;
   s.lastSavedAt = Date.now();
   writeJSON(KEYS.meta, { lastSavedAt: s.lastSavedAt });
+  return true;
 }
 
 function persistAll() {
@@ -341,19 +438,26 @@ export function findItemByCode(code: string): Item | undefined {
 /** @deprecated Utiliser `findItemByCode`. */
 export const findItemBySku = findItemByCode;
 
-/** `true` si `code` est déjà utilisé comme code-barres ou SKU d'un article. */
-function isCodeTaken(code: string): boolean {
+/**
+ * `true` si `code` est déjà utilisé comme code-barres ou SKU d'un article
+ * (hors article `exceptId`, pour la modification).
+ */
+function isCodeTaken(code: string, exceptId?: string): boolean {
   const c = codeKey(code);
-  return state().items.some((i) => codeKey(i.sku) === c || (i.barcode !== undefined && codeKey(i.barcode) === c));
+  return state().items.some(
+    (i) => i.id !== exceptId && (codeKey(i.sku) === c || (i.barcode !== undefined && codeKey(i.barcode) === c))
+  );
 }
 
-function nextSku(): string {
+/** Prochaine référence `SKU-n` libre (et différente de `avoid`, le code-barres saisi). */
+function nextSku(avoid?: string): string {
   let n = 1000;
   for (const i of state().items) {
     const m = /^SKU-(\d+)$/i.exec(i.sku);
     if (m) n = Math.max(n, Number(m[1]) + 1);
   }
-  while (isCodeTaken(`SKU-${n}`)) n++;
+  const avoidKey = avoid ? codeKey(avoid) : '';
+  while (isCodeTaken(`SKU-${n}`) || codeKey(`SKU-${n}`) === avoidKey) n++;
   return `SKU-${n}`;
 }
 
@@ -378,16 +482,18 @@ export function createItem(input: NewItemInput): CreateItemResult {
   if (barcode && isCodeTaken(barcode)) return { error: 'Ce code-barres est déjà utilisé par un autre article.', field: 'barcode' };
   if (sku && isCodeTaken(sku)) return { error: 'Cette référence (SKU) est déjà utilisée.', field: 'sku' };
   if (barcode && sku && codeKey(barcode) === codeKey(sku)) return { error: 'Le SKU doit être différent du code-barres.', field: 'sku' };
+  if (input.photo !== undefined && !isPhotoName(input.photo)) return { error: 'Photo invalide.', field: 'photo' };
 
   const item: Item = {
     id: nextItemId(),
     name,
-    sku: sku || nextSku(),
+    sku: sku || nextSku(barcode),
     ...(barcode ? { barcode } : {}),
     folder,
     qty: input.qty,
     min: input.min,
     price: input.price,
+    ...(input.photo !== undefined ? { photo: input.photo } : {}),
   };
 
   const s = state();
@@ -399,6 +505,102 @@ export function createItem(input: NewItemInput): CreateItemResult {
     persist('items');
   }
   return { item };
+}
+
+/**
+ * Modifie un article (mêmes règles de validation que `createItem`). Le stock
+ * n'est pas modifiable ici. Si la photo est remplacée ou retirée, l'ancien
+ * fichier est supprimé après l'enregistrement.
+ */
+export function updateItem(id: string, patch: UpdateItemPatch): UpdateItemResult {
+  const current = getItem(id);
+  if (!current) return { error: 'Article introuvable.', field: 'id' };
+
+  const name = patch.name !== undefined ? patch.name.trim() : current.name;
+  const folder = patch.folder !== undefined ? patch.folder.trim() : current.folder;
+  const barcode = patch.barcode !== undefined ? patch.barcode.trim() : (current.barcode ?? '');
+  const skuInput = patch.sku !== undefined ? patch.sku.trim() : current.sku;
+  const min = patch.min ?? current.min;
+  const price = patch.price ?? current.price;
+  const photo = patch.photo === undefined ? current.photo : (patch.photo ?? undefined);
+
+  if (!name) return { error: 'Le nom est obligatoire.', field: 'name' };
+  if (!folder) return { error: 'Choisissez ou saisissez un dossier.', field: 'folder' };
+  if (!Number.isInteger(min) || min < 0) return { error: 'Le seuil minimum doit être un entier positif ou nul.', field: 'min' };
+  if (!Number.isFinite(price) || price < 0) return { error: 'Le prix doit être un nombre positif ou nul.', field: 'price' };
+  if (barcode && isCodeTaken(barcode, id)) return { error: 'Ce code-barres est déjà utilisé par un autre article.', field: 'barcode' };
+  if (skuInput && isCodeTaken(skuInput, id)) return { error: 'Cette référence (SKU) est déjà utilisée.', field: 'sku' };
+  if (barcode && skuInput && codeKey(barcode) === codeKey(skuInput)) return { error: 'Le SKU doit être différent du code-barres.', field: 'sku' };
+  if (photo !== undefined && !isPhotoName(photo)) return { error: 'Photo invalide.', field: 'photo' };
+
+  // SKU vidé : nouvelle référence, comme à la création.
+  const sku = skuInput || nextSku(barcode);
+
+  const { barcode: _oldBarcode, photo: _oldPhoto, ...base } = current;
+  const updated: Item = {
+    ...base,
+    name,
+    sku,
+    ...(barcode ? { barcode } : {}),
+    folder,
+    min,
+    price,
+    ...(photo !== undefined ? { photo } : {}),
+  };
+  replaceItem(updated);
+  // L'ancienne photo n'est supprimée qu'une fois l'article enregistré : en cas
+  // d'échec d'écriture, l'article stocké la référence encore.
+  const saved = persist('items');
+  if (saved && current.photo !== undefined && current.photo !== photo) removePhotoFile(current.photo);
+  return { item: updated };
+}
+
+/**
+ * Supprime un article avec ses mouvements, ses saisies dans les comptages
+ * (et son stock attendu dans les comptages terminés), un éventuel scan de
+ * comptage en attente pointant vers lui, et sa photo.
+ */
+export function deleteItem(id: string): DeleteItemResult {
+  const item = getItem(id);
+  if (!item) return { ok: false, error: 'Article introuvable.' };
+  const s = state();
+
+  // Position de l'article dans chaque comptage, avant suppression.
+  const positions = new Map<string, { pos: number; len: number }>();
+  for (const sid of Object.keys(s.sessions)) {
+    const list = getCountItems(sid);
+    positions.set(sid, { pos: list.findIndex((i) => i.id === id), len: list.length });
+  }
+
+  s.items = s.items.filter((i) => i.id !== id);
+  s.movements = s.movements.filter((m) => m.itemId !== id);
+
+  const sessions: Record<string, CountSession> = {};
+  for (const [sid, session] of Object.entries(s.sessions)) {
+    const { [id]: _entry, ...entries } = session.entries;
+    const next: CountSession = { ...session, entries };
+    if (session.expected) {
+      const { [id]: _expected, ...expected } = session.expected;
+      next.expected = expected;
+    }
+    if (session.completedAt === undefined) {
+      // Comptage en cours : l'index reste sur le même article, dans les bornes.
+      const { pos, len } = positions.get(sid) ?? { pos: -1, len: 0 };
+      const newLen = pos >= 0 ? len - 1 : len;
+      const idx = pos >= 0 && pos < session.idx ? session.idx - 1 : session.idx;
+      next.idx = Math.min(Math.max(0, idx), Math.max(0, newLen - 1));
+    }
+    sessions[sid] = next;
+  }
+  s.sessions = sessions;
+
+  const codes = new Set([codeKey(item.sku), ...(item.barcode !== undefined ? [codeKey(item.barcode)] : [])]);
+  for (const [countId, code] of _pendingCountScans) {
+    if (codes.has(codeKey(code))) _pendingCountScans.delete(countId);
+  }
+
+  if (persist('items', 'movements', 'sessions')) removePhotoFile(item.photo);
+  return { ok: true };
 }
 
 // ── Mouvements ─────────────────────────────────────────────────────────────
@@ -594,10 +796,11 @@ export function setPrefs(partial: Partial<Prefs>): void {
 // ── Stockage ───────────────────────────────────────────────────────────────
 
 /**
- * Efface toutes les données de l'appareil (préférences comprises) :
+ * Efface toutes les données de l'appareil (préférences et photos comprises) :
  * l'application repart vide.
  */
 export function resetAllData(): void {
+  removeAllPhotoFiles();
   clearAll();
   _pendingCountScans.clear();
   _state = blankState();
@@ -606,11 +809,12 @@ export function resetAllData(): void {
 
 /**
  * Remplace les articles, mouvements et comptages actuels par les données
- * d'exemple de `data/mock.ts` (préférences conservées).
+ * d'exemple de `data/mock.ts` (préférences conservées, photos supprimées).
  * Utilisé uniquement depuis Profil › Stockage local.
  */
 export function loadSampleData(): void {
   const prev = state();
+  removeAllPhotoFiles();
   _pendingCountScans.clear();
   _state = { ...sampleState(prev.prefs), ...(prev.lastSavedAt !== undefined ? { lastSavedAt: prev.lastSavedAt } : {}) };
   persist('items', 'movements', 'sessions');

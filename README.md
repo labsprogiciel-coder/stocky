@@ -12,7 +12,7 @@ Tant qu'une liste ou une carte n'a pas de contenu, l'écran affiche un état vid
 - **Articles** : sans article, « Ajouter un article » et « Scanner » ; une recherche sans résultat affiche « Aucun résultat » avec « Effacer la recherche ».
 - **Tâches** : sans article, le comptage est remplacé par une explication et « Ajouter un article » ; l'onglet « Terminées » a son propre état vide.
 - **Comptage** : sans article, « Ajouter un article » et « Retour » (pas d'export CSV possible).
-- **Fiche article** : identifiant inconnu → « Article introuvable » et « Retour aux articles ».
+- **Fiche article** et **modification** : identifiant inconnu → « Article introuvable » et « Retour aux articles ».
 - **Scan** : un code inconnu propose toujours « Créer l'article », y compris avec un inventaire vide.
 
 ## Stockage hors ligne
@@ -20,8 +20,24 @@ Tant qu'une liste ou une carte n'a pas de contenu, l'écran affiche un état vid
 - Les données sont persistées avec **react-native-mmkv** (v4, Nitro Modules) via `data/storage.ts` ; `data/store.ts` expose une API synchrone aux écrans et enregistre chaque modification immédiatement.
 - Clés versionnées (`schemaVersion` = 1, données sous `v1.items`, `v1.movements`, `v1.countSessions`, `v1.prefs`, `v1.meta`). Les entrées invalides sont ignorées ; si les articles stockés sont absents, illisibles ou tous invalides, l'application démarre avec un inventaire vide (préférences conservées) — aucune donnée d'exemple n'est injectée. Une liste d'articles vide est valide. Les données existantes valides ne sont jamais écrasées.
 - MMKV est un module natif : il faut un **build de développement** (`eas build --profile development` ou `npx expo run:android`). Dans **Expo Go**, le module est absent : l'application fonctionne quand même mais avec un **stockage temporaire** en mémoire (bandeau « Stockage temporaire » sur l'accueil et dans Profil), perdu à la fermeture.
-- **Réinitialiser** : Profil › Stockage local › « Réinitialiser les données » efface tout (articles, mouvements, comptages et préférences) : l'application repart vide.
+- **Réinitialiser** : Profil › Stockage local › « Réinitialiser les données » efface tout (articles, photos, mouvements, comptages et préférences) : l'application repart vide.
 - **Données d'exemple** : Profil › Stockage local › « Charger les données d'exemple » remplace, après confirmation, les articles, mouvements et comptages actuels par le jeu d'exemple de `data/mock.ts` (8 articles, 2 mouvements) ; les préférences sont conservées.
+
+## Modifier et supprimer un article
+
+- **Modifier** : bouton « Modifier » de la fiche article → écran `article/edit/[id]` (« Modifier l'article »). Il réutilise le formulaire de création (`components/ArticleForm.tsx`), prérempli : nom, code-barres, référence (SKU), dossier, seuil minimum, prix et photo. Les règles de validation sont celles de la création (nom et dossier obligatoires, seuil entier positif ou nul, prix positif ou nul, code-barres et SKU uniques — l'article lui-même excepté — et SKU différent du code-barres ; un SKU vidé est régénéré). Les erreurs s'affichent sous les champs concernés.
+- Le **stock n'est pas modifiable** depuis ce formulaire : il se règle avec « Ajuster le stock » sur la fiche (ou par le scanner / un comptage), pour que chaque changement soit enregistré comme mouvement.
+- **Supprimer** : « Supprimer l'article » sur la fiche, après confirmation. Sont supprimés avec l'article : sa photo, tous ses mouvements, ses saisies dans les comptages en cours et terminés (il disparaît aussi du stock attendu figé d'un comptage terminé, donc de son écran et de son export CSV) et un éventuel scan de comptage en attente. L'application revient ensuite à la liste des articles. Cette action est irréversible.
+
+## Photos des articles
+
+- Le formulaire de création / modification propose « Prendre une photo » (appareil photo) et « Choisir dans la galerie » (**expo-image-picker**, recadrage carré, compression ~60 %), ainsi que « Supprimer la photo ». En cas de refus d'autorisation, une alerte propose d'ouvrir les réglages de l'appareil.
+- La photo est copiée dans le dossier `photos` des **documents de l'application** (`Paths.document` d'**expo-file-system**), uniquement sur l'appareil. L'article n'enregistre que le **nom du fichier** (ex. `item-12-…jpg`), jamais un chemin absolu (le chemin du conteneur iOS change entre deux mises à jour) ; l'URI est recalculé à l'affichage (`data/photos.ts`).
+- La photo s'affiche dans la liste des articles, la fiche article, l'activité récente de l'accueil et le comptage ; à défaut (aucune photo, fichier absent ou module natif indisponible), la vignette par défaut est affichée.
+- Fichiers : une photo remplacée ou retirée est supprimée après l'enregistrement ; une photo choisie puis abandonnée (Annuler, retour) est supprimée ; la suppression d'un article supprime sa photo ; « Réinitialiser les données » et « Charger les données d'exemple » suppriment toutes les photos. Au démarrage, les fichiers photo qu'aucun article ne référence (articles perdus en stockage temporaire, application fermée avant l'enregistrement du formulaire…) sont supprimés.
+- Les photos ne font pas partie de l'export CSV (colonnes inchangées).
+- `data/store.ts` n'importe aucun module natif de fichiers : `data/photos.ts` (importé par `app/_layout.tsx`) lui fournit ses fonctions de suppression via `setPhotoFileHooks()`. Sans elles (tests Node), la suppression des fichiers est ignorée.
+- ⚠️ Le plugin **expo-image-picker** a été ajouté à `app.json` (textes d'autorisation photos / caméra en français) : cela modifie le *fingerprint* natif, il faut donc **un nouveau build natif** (`eas build`) — une mise à jour OTA ne suffit pas. Les textes d'autorisation en français n'apparaissent que dans ce nouveau build. Dans **Expo Go**, l'ajout de photo fonctionne (avec les textes d'autorisation d'Expo Go), mais comme les articles n'y sont gardés qu'en mémoire, ils sont perdus au relancement. « Photo indisponible » ne s'affiche que si le module natif manque (ancien build sans expo-image-picker).
 
 ## Comptage cyclique
 
@@ -41,7 +57,7 @@ Tant qu'une liste ou une carte n'a pas de contenu, l'écran affiche un état vid
 
 - **Expo SDK 58**, React Native 0.88, React 19, nouvelle architecture activée
 - **expo-router** (routes basées sur les fichiers, routes typées)
-- **expo-camera** pour le scan, **expo-location** pour la géolocalisation
+- **expo-camera** pour le scan, **expo-image-picker** + **expo-file-system** pour les photos d'articles, **expo-location** pour la géolocalisation
 - **expo-updates** pour les mises à jour OTA (EAS Update, `runtimeVersion` basé sur le *fingerprint*)
 - Gestionnaire de paquets : **pnpm** (`pnpm-lock.yaml`)
 
@@ -61,15 +77,18 @@ app/
   (tabs)/              Onglets : Accueil, Articles, Scanner, Tâches, Profil
   scan.tsx             Scanner plein écran (mouvement Entrée / Sortie, saisie manuelle)
   article/new.tsx      Création d'un article
-  article/[id].tsx     Détail d'un article
+  article/[id].tsx     Détail d'un article (ajustement du stock, modifier, supprimer)
+  article/edit/[id].tsx Modification d'un article
   count/[id].tsx       Comptage cyclique (progression enregistrée)
-components/ui.tsx      Composants partagés (Btn, Stepper, Segmented, EmptyState…)
+components/ui.tsx      Composants partagés (Btn, Stepper, Segmented, EmptyState, Thumb, ItemPhoto…)
+components/ArticleForm.tsx Formulaire d'article (création et modification, photo)
 constants/theme.ts     Couleurs et thème
 data/mock.ts           Données de démonstration (chargées uniquement via « Charger les données d'exemple »)
 data/storage.ts        Accès MMKV (repli en mémoire si indisponible)
 data/store.ts          État de l'app persisté (articles, mouvements, comptages, préférences)
 data/csv.ts            Construction du CSV d'un comptage (module pur, testable)
 data/exportCount.ts    Export CSV d'un comptage (fichier + feuille de partage)
+data/photos.ts         Photos des articles (appareil photo / galerie, fichiers locaux)
 assets/images/         Icône, icône adaptative, splash, favicon
 .eas/workflows/        Workflows EAS (CI/CD)
 ```
