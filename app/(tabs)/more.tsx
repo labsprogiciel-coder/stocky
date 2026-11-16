@@ -5,6 +5,7 @@ import { Feather } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
 import { colors } from '../../constants/theme';
 import { fmtCount, fmtTime, getPrefs, setPrefs, getStorageInfo, loadSampleData, resetAllData } from '../../data/store';
+import { exportAssetsCsv } from '../../data/exportCount';
 
 // ── Mock user data (replace with real auth context later) ──────────────────
 const USER = {
@@ -89,6 +90,17 @@ function SettingCard({ children }: { children: React.ReactNode }) {
 export default function Profile() {
   const [vibration, setVibration] = useState(() => getPrefs().vibration);
   const [info, setInfo] = useState(() => getStorageInfo());
+  const [exporting, setExporting] = useState(false);
+
+  const handleExportAssets = async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      await exportAssetsCsv();
+    } finally {
+      setExporting(false);
+    }
+  };
 
   // Rafraîchir les compteurs à chaque retour sur l'onglet
   useFocusEffect(
@@ -118,7 +130,7 @@ export default function Profile() {
   const handleReset = () => {
     Alert.alert(
       'Réinitialiser les données',
-      'Tous les articles, photos, mouvements et comptages enregistrés sur cet appareil seront supprimés, et les préférences remises par défaut. L\'application sera vide. Cette action est irréversible.',
+      'Tous les articles, appareils (numéros de série), photos, mouvements et comptages enregistrés sur cet appareil seront supprimés, et les préférences remises par défaut. L\'application sera vide. Cette action est irréversible.',
       [
         { text: 'Annuler', style: 'cancel' },
         {
@@ -138,7 +150,7 @@ export default function Profile() {
   const handleLoadSample = () => {
     Alert.alert(
       'Charger les données d\'exemple',
-      'Les articles, photos, mouvements et comptages actuels seront supprimés et remplacés par des données d\'exemple. Vos préférences sont conservées. Cette action est irréversible.',
+      'Les articles, appareils (numéros de série), photos, mouvements et comptages actuels seront supprimés et remplacés par des données d\'exemple. Vos préférences sont conservées. Cette action est irréversible.',
       [
         { text: 'Annuler', style: 'cancel' },
         {
@@ -207,7 +219,9 @@ export default function Profile() {
             </Text>
           )}
           <Text style={{ fontSize: 13, color: colors.muted }}>
-            {fmtCount(info.itemCount, 'article', 'articles')} · {fmtCount(info.movementCount, 'mouvement', 'mouvements')}
+            {fmtCount(info.itemCount, 'article', 'articles')}
+            {info.unitCount > 0 ? ` · ${fmtCount(info.unitCount, 'appareil', 'appareils')}` : ''}
+            {' · '}{fmtCount(info.movementCount, 'mouvement', 'mouvements')}
             {info.lastSavedAt !== undefined ? ` · Dernier enregistrement : ${fmtTime(info.lastSavedAt)}` : ''}
           </Text>
           {info.itemCount === 0 && (
@@ -236,6 +250,31 @@ export default function Profile() {
             <Text style={styles.resetBtnText}>Réinitialiser les données</Text>
           </Pressable>
         </View>
+
+        {/* ── EXPORT ──────────────────────────────────────────────────── */}
+        {info.unitCount > 0 && (
+          <>
+            <SectionLabel label="EXPORT" />
+            <View style={[styles.card, { gap: 12 }]}>
+              <Text style={{ fontSize: 13, color: colors.muted }}>
+                {fmtCount(info.unitCount, 'appareil suivi', 'appareils suivis')} par numéro de série. Le fichier CSV
+                (UTF-8, virgule) s'importe dans Jira Service Management Assets : un objet par appareil, clé « Serial Number ».
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Exporter les appareils pour Jira Assets"
+                accessibilityHint="Crée un fichier CSV de tous les appareils et ouvre le partage"
+                accessibilityState={{ disabled: exporting, busy: exporting }}
+                disabled={exporting}
+                onPress={() => { void handleExportAssets(); }}
+                style={[styles.sampleBtn, exporting && { opacity: 0.4 }]}
+              >
+                <Feather name="share" size={18} color={colors.primary} />
+                <Text style={styles.sampleBtnText}>{exporting ? 'Export en cours…' : 'Exporter les appareils (Jira Assets)'}</Text>
+              </Pressable>
+            </View>
+          </>
+        )}
 
         {/* ── PRÉFÉRENCES ─────────────────────────────────────────────── */}
         <SectionLabel label="PRÉFÉRENCES" />

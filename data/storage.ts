@@ -20,6 +20,8 @@ export const KEYS = {
   items: `${NS}items`,
   movements: `${NS}movements`,
   countSessions: `${NS}countSessions`,
+  /** Unités suivies par numéro de série. Ajout rétrocompatible : clé absente = aucune unité. */
+  units: `${NS}units`,
   prefs: `${NS}prefs`,
   meta: `${NS}meta`,
 } as const;

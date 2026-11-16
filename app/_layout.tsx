@@ -21,6 +21,8 @@ export default function RootLayout() {
         <Stack.Screen name="article/[id]" options={{ title: 'Détail', headerBackTitle: 'Retour' }} />
         <Stack.Screen name="article/edit/[id]" options={{ title: "Modifier l'article", headerBackTitle: 'Retour' }} />
         <Stack.Screen name="count/[id]" options={{ headerShown: false }} />
+        <Stack.Screen name="unit/new" options={{ title: 'Nouvel appareil', headerBackTitle: 'Retour' }} />
+        <Stack.Screen name="unit/[id]" options={{ title: 'Appareil', headerBackTitle: 'Retour' }} />
       </Stack>
     </>
   );

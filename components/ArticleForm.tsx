@@ -2,9 +2,13 @@
  * Formulaire d'article partagé par la création (`app/article/new.tsx`) et la
  * modification (`app/article/edit/[id].tsx`).
  *
- * - Création : tous les champs, dont la quantité initiale.
+ * - Création : tous les champs, dont la quantité initiale (masquée si le suivi
+ *   par numéro de série est activé : le stock démarre à 0 et vient des appareils).
  * - Modification : champs préremplis, sans la quantité (le stock se modifie
  *   depuis la fiche article pour que chaque changement soit un mouvement).
+ *   Activer / désactiver le suivi par numéro de série peut être refusé par
+ *   `updateItem` (stock non nul, appareils enregistrés) : l'erreur s'affiche
+ *   sous l'interrupteur.
  *
  * Photo : un fichier choisi ici n'appartient à l'article qu'après un
  * enregistrement réussi. Les fichiers choisis puis remplacés, retirés ou
@@ -13,9 +17,9 @@
  * `updateItem` après l'enregistrement.
  */
 import { useEffect, useRef, useState } from 'react';
-import { View, Text, TextInput, ScrollView, type TextInputProps } from 'react-native';
+import { View, Text, ScrollView, Switch } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Card, Btn, Chip, Muted, ItemPhoto, Alert as InlineAlert } from './ui';
+import { Card, Btn, Chip, Muted, ItemPhoto, TextField as Field, Alert as InlineAlert } from './ui';
 import { colors } from '../constants/theme';
 import { createItem, fmtCount, getItems, updateItem, type Item, type NewItemInput } from '../data/store';
 import { deletePhoto, pickPhoto, type PhotoSource } from '../data/photos';
@@ -33,50 +37,18 @@ function parseNumber(text: string): number {
 /** Nombre affiché dans un champ, avec la virgule décimale française. */
 const numberText = (n: number) => String(n).replace('.', ',');
 
-function Field({
-  label,
-  error,
-  hint,
-  ...input
-}: { label: string; error?: string; hint?: string } & TextInputProps) {
-  return (
-    <View style={{ gap: 6 }}>
-      <Muted style={{ fontWeight: '600', fontSize: 12 }}>{label}</Muted>
-      <TextInput
-        accessibilityLabel={label}
-        accessibilityHint={error ?? hint}
-        placeholderTextColor={colors.muted}
-        {...input}
-        style={{
-          height: 48,
-          paddingHorizontal: 14,
-          borderWidth: 1,
-          borderColor: error ? '#B91C1C' : colors.field,
-          borderRadius: 10,
-          backgroundColor: '#fff',
-          fontSize: 15,
-          color: colors.text,
-        }}
-      />
-      {error ? (
-        <Text accessibilityLiveRegion="polite" style={{ fontSize: 12, color: '#B91C1C', fontWeight: '500' }}>{error}</Text>
-      ) : hint ? (
-        <Muted style={{ fontSize: 12 }}>{hint}</Muted>
-      ) : null}
-    </View>
-  );
-}
-
 export type ArticleFormProps = {
   /** Article à modifier ; absent pour une création. */
   item?: Item;
   /** Code-barres prérempli (création depuis le scanner). */
   initialBarcode?: string;
+  /** Création : suivi par numéro de série activé d'emblée. */
+  initialSerialized?: boolean;
   /** Appelé après un enregistrement réussi, ou sur « Annuler ». */
   onDone: () => void;
 };
 
-export function ArticleForm({ item, initialBarcode, onDone }: ArticleFormProps) {
+export function ArticleForm({ item, initialBarcode, initialSerialized, onDone }: ArticleFormProps) {
   const editing = item !== undefined;
   const [folders] = useState(() => Array.from(new Set(getItems().map((i) => i.folder))));
 
@@ -87,6 +59,7 @@ export function ArticleForm({ item, initialBarcode, onDone }: ArticleFormProps) 
   const [qty, setQty] = useState('0');
   const [min, setMin] = useState(item ? numberText(item.min) : '0');
   const [price, setPrice] = useState(item ? numberText(item.price) : '0');
+  const [serialized, setSerialized] = useState(item ? item.serialized === true : initialSerialized === true);
   const [photo, setPhotoState] = useState<string | null>(item?.photo ?? null);
   // Copie synchrone de `photo`, lue après l'attente du sélecteur.
   const photoRef = useRef<string | null>(item?.photo ?? null);
@@ -143,12 +116,13 @@ export function ArticleForm({ item, initialBarcode, onDone }: ArticleFormProps) 
   const handleSubmit = () => {
     if (submittingRef.current || picking) return;
     const next: Errors = {};
-    const nQty = editing ? 0 : parseNumber(qty);
+    // Suivi par numéro de série : le stock démarre à 0 (il vient des appareils).
+    const nQty = editing || serialized ? 0 : parseNumber(qty);
     const nMin = parseNumber(min);
     const nPrice = parseNumber(price);
     if (!name.trim()) next.name = 'Le nom est obligatoire.';
     if (!folder.trim()) next.folder = 'Choisissez ou saisissez un dossier.';
-    if (!editing && !Number.isInteger(nQty)) next.qty = 'Saisissez un nombre entier positif ou nul.';
+    if (!editing && !serialized && !Number.isInteger(nQty)) next.qty = 'Saisissez un nombre entier positif ou nul.';
     if (!Number.isInteger(nMin)) next.min = 'Saisissez un nombre entier positif ou nul.';
     if (Number.isNaN(nPrice)) next.price = 'Saisissez un prix positif ou nul.';
     if (Object.keys(next).length > 0) {
@@ -159,8 +133,8 @@ export function ArticleForm({ item, initialBarcode, onDone }: ArticleFormProps) 
 
     submittingRef.current = true;
     const res = editing
-      ? updateItem(item.id, { name, barcode, sku, folder, min: nMin, price: nPrice, photo })
-      : createItem({ name, barcode, sku, folder, qty: nQty, min: nMin, price: nPrice, ...(photo !== null ? { photo } : {}) });
+      ? updateItem(item.id, { name, barcode, sku, folder, min: nMin, price: nPrice, photo, serialized })
+      : createItem({ name, barcode, sku, folder, qty: nQty, min: nMin, price: nPrice, serialized, ...(photo !== null ? { photo } : {}) });
     if (res.error !== undefined) {
       submittingRef.current = false;
       const field = res.field;
@@ -261,9 +235,46 @@ export function ArticleForm({ item, initialBarcode, onDone }: ArticleFormProps) 
           )}
         </Card>
 
+        <Card style={{ gap: 8 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 48 }}>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 15, fontWeight: '600', color: colors.text }}>Suivi par numéro de série</Text>
+              <Muted style={{ fontSize: 12, marginTop: 2 }}>
+                Pour les appareils : téléphones, ordinateurs, casques… Chaque appareil est enregistré avec son
+                numéro de série (et son IMEI) ; le stock est le nombre d'appareils « En stock ».
+              </Muted>
+            </View>
+            <Switch
+              value={serialized}
+              onValueChange={(v) => { setSerialized(v); clear('serialized'); clear('qty'); }}
+              trackColor={{ false: colors.field, true: colors.primary }}
+              thumbColor="#fff"
+              accessibilityLabel="Suivi par numéro de série"
+              accessibilityHint="Pour les appareils identifiés individuellement : téléphones, ordinateurs, casques"
+            />
+          </View>
+          {!editing && serialized && (
+            <Muted style={{ fontSize: 12 }}>
+              L'article est créé avec un stock de 0 : ajoutez ensuite chaque appareil depuis sa fiche ou le scanner.
+            </Muted>
+          )}
+          {editing && !errors.serialized && serialized !== (item.serialized === true) && (
+            <Muted style={{ fontSize: 12 }}>
+              {serialized
+                ? item.qty > 0
+                  ? `Le stock actuel (${item.qty}) doit d'abord être mis à 0 depuis la fiche article : les appareils seront ensuite ajoutés un par un.`
+                  : 'Les appareils seront ajoutés un par un depuis la fiche article ou le scanner.'
+                : 'Le stock redeviendra une simple quantité. Les numéros de série doivent avoir été supprimés.'}
+            </Muted>
+          )}
+          {errors.serialized && (
+            <Text accessibilityLiveRegion="polite" style={{ fontSize: 12, color: '#B91C1C', fontWeight: '500' }}>{errors.serialized}</Text>
+          )}
+        </Card>
+
         <Card style={{ gap: 14 }}>
           <View style={{ flexDirection: 'row', gap: 12 }}>
-            {!editing && (
+            {!editing && !serialized && (
               <View style={{ flex: 1 }}>
                 <Field
                   label="Quantité initiale"
@@ -294,12 +305,17 @@ export function ArticleForm({ item, initialBarcode, onDone }: ArticleFormProps) 
             selectTextOnFocus
             error={errors.price}
           />
-          {editing && (
+          {editing && (item.serialized ? (
+            <Muted style={{ fontSize: 12 }}>
+              Stock actuel : {fmtCount(item.qty, 'appareil en stock', 'appareils en stock')}. Il est calculé à partir
+              des numéros de série enregistrés sur la fiche article.
+            </Muted>
+          ) : (
             <Muted style={{ fontSize: 12 }}>
               Stock actuel : {fmtCount(item.qty, 'unité', 'unités')}. Il se modifie depuis la fiche article
               (« Ajuster le stock ») afin que chaque changement soit enregistré comme mouvement.
             </Muted>
-          )}
+          ))}
         </Card>
 
         {formError && <InlineAlert message={formError} />}

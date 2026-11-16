@@ -14,9 +14,51 @@
  * suppression via `setPhotoFileHooks()`. Ce module n'importe ainsi aucun
  * module natif de fichiers et reste exécutable hors de React Native (tests) :
  * sans hooks enregistrés, la suppression des fichiers est simplement ignorée.
+ *
+ * Suivi par numéro de série (`Item.serialized`, choix propre à chaque
+ * article) : un article suivi est composé d'unités (`Unit`, une par appareil,
+ * clé = numéro de série, IMEI facultatif), stockées sous `v1.units` (ajout
+ * rétrocompatible : clé absente = aucune unité, pas de changement de schéma).
+ * Le stock d'un tel article est DÉRIVÉ : `item.qty` = nombre de ses unités
+ * « En stock », recalculé après chaque mutation d'unité. `adjustStock` et
+ * `commitMovement` le refusent ; on passe par `addUnit`/`updateUnit`/
+ * `deleteUnit`, qui tracent chaque entrée/sortie de stock par un mouvement
+ * portant `unitId`/`serial`. Choix documenté : supprimer une unité « En stock »
+ * enregistre une Sortie de 1 (le stock diminue, le changement reste tracé) ;
+ * supprimer une unité d'un autre statut n'enregistre rien.
+ *
+ * Un numéro de série ou un IMEI ne peut pas être égal au code-barres ou au SKU
+ * d'un article (et inversement), pour qu'un scan reste non ambigu.
  */
-import { items as sampleItems, recent as sampleRecent } from './mock';
+import { items as sampleItems, recent as sampleRecent, units as sampleUnits } from './mock';
 import { KEYS, clearAll, isPersistent, readJSON, writeJSON } from './storage';
+import {
+  ASSIGNEE_MAX_LENGTH,
+  NOTE_MAX_LENGTH,
+  SERIAL_MAX_LENGTH,
+  imeiDigits,
+  isUnitStatus,
+  isValidImei,
+  normalizeImei,
+  normalizeSerial,
+  serialKey,
+  type Unit,
+  type UnitStatus,
+} from './units';
+
+export {
+  UNIT_STATUSES,
+  UNIT_STATUS_JIRA_LABELS,
+  UNIT_STATUS_LABELS,
+  imeiDigits,
+  isUnitStatus,
+  isValidImei,
+  luhnValid,
+  normalizeImei,
+  normalizeSerial,
+  serialKey,
+} from './units';
+export type { Unit, UnitStatus } from './units';
 
 export type Item = {
   id: string;
@@ -29,6 +71,11 @@ export type Item = {
   price: number;
   /** Nom du fichier photo (dossier `photos` des documents de l'app), jamais un URI. */
   photo?: string;
+  /**
+   * Suivi par numéro de série (absent = `false`). Si `true`, `qty` est dérivé :
+   * nombre d'unités « En stock » de l'article.
+   */
+  serialized?: boolean;
 };
 
 export type MovementMode = 'Entrée' | 'Sortie';
@@ -40,10 +87,22 @@ export type Movement = {
   mode: MovementMode;
   qty: number;
   ts: number; // epoch ms
+  /** Unité concernée (article suivi par numéro de série) ; absent sinon. */
+  unitId?: string;
+  /** Numéro de série de l'unité au moment du mouvement (reste lisible si l'unité est supprimée). */
+  serial?: string;
 };
 
 export type CountStatus = 'Compté' | 'Passé';
-export type CountEntry = { qty: number; status: CountStatus };
+export type CountEntry = {
+  qty: number;
+  status: CountStatus;
+  /**
+   * Article suivi par numéro de série : identifiants des unités trouvées
+   * (`qty` = leur nombre). Absent pour un article suivi en quantité.
+   */
+  serials?: string[];
+};
 
 export type CountSession = {
   id: string;
@@ -56,6 +115,17 @@ export type CountSession = {
    * (absent des sessions en cours et de celles enregistrées avant son ajout).
    */
   expected?: Record<string, number>;
+  /**
+   * Articles suivis par numéro de série : unités « En stock » de chaque article
+   * au moment de la clôture (identifiants), avant ajustement.
+   */
+  expectedUnits?: Record<string, string[]>;
+  /**
+   * Copie, à la clôture (après ajustement), des unités attendues et trouvées,
+   * par identifiant : un appareil supprimé ensuite reste dans le rapport d'un
+   * comptage terminé (écarts, export CSV).
+   */
+  unitSnapshot?: Record<string, Unit>;
 };
 
 export type CycleCountInfo = {
@@ -78,6 +148,7 @@ export type StorageInfo = {
   lastSavedAt?: number;
   itemCount: number;
   movementCount: number;
+  unitCount: number;
 };
 
 export type NewItemInput = {
@@ -90,6 +161,8 @@ export type NewItemInput = {
   price: number;
   /** Nom du fichier photo renvoyé par `pickPhoto()` (facultatif). */
   photo?: string;
+  /** Suivi par numéro de série : exige `qty === 0` (le stock vient ensuite des unités). */
+  serialized?: boolean;
 };
 
 export type CreateItemResult =
@@ -101,7 +174,9 @@ export type CreateItemResult =
  * il ne change que via `adjustStock`/`commitMovement`, pour que chaque
  * changement soit tracé par un mouvement.
  * - `barcode: ''` retire le code-barres ; `sku: ''` génère une nouvelle référence ;
- * - `photo: null` retire la photo.
+ * - `photo: null` retire la photo ;
+ * - `serialized: true` n'est accepté que si le stock est à 0, `false` que si
+ *   l'article n'a aucune unité.
  */
 export type UpdateItemPatch = {
   name?: string;
@@ -111,6 +186,7 @@ export type UpdateItemPatch = {
   min?: number;
   price?: number;
   photo?: string | null;
+  serialized?: boolean;
 };
 
 export type UpdateItemResult =
@@ -126,8 +202,70 @@ export type PhotoFileHooks = {
 };
 
 export type CompleteCountResult =
-  | { ok: true; adjusted: number }
+  /** `adjusted` : articles dont le stock a changé ; `unitsUpdated` : unités dont le statut a changé. */
+  | { ok: true; adjusted: number; unitsUpdated: number }
   | { ok: false; error: string };
+
+export type NewUnitInput = {
+  serial: string;
+  imei?: string;
+  /** Par défaut `'in_stock'`. */
+  status?: UnitStatus;
+  /** Obligatoire si `status === 'assigned'`. */
+  assignee?: string;
+  note?: string;
+};
+
+/**
+ * Champs modifiables d'une unité. `imei: ''`, `assignee: ''` et `note: ''`
+ * retirent la valeur. L'attributaire n'est conservé que pour le statut
+ * « Attribué » : passer à un autre statut le retire.
+ */
+export type UpdateUnitPatch = {
+  serial?: string;
+  imei?: string;
+  status?: UnitStatus;
+  assignee?: string;
+  note?: string;
+};
+
+export type UnitField = 'serial' | 'imei' | 'status' | 'assignee' | 'note' | 'itemId' | 'id';
+
+export type UnitResult =
+  | { unit: Unit; error?: undefined; field?: undefined }
+  | { unit?: undefined; error: string; field?: UnitField };
+
+export type DeleteUnitResult = { ok: true } | { ok: false; error: string };
+
+/** Résultat d'un scan de numéro de série pendant un comptage. */
+export type MarkUnitFoundResult =
+  /** `duplicate` : l'unité était déjà comptée (aucun changement). */
+  | { ok: true; itemId: string; unitId: string; duplicate: boolean; error?: undefined }
+  | { ok: false; error: string; itemId?: undefined; unitId?: undefined };
+
+/**
+ * Écarts d'un article suivi par numéro de série dans un comptage.
+ * - `expected` : unités attendues (« En stock » à la clôture pour un comptage
+ *   terminé, sinon actuellement « En stock ») ;
+ * - `found` : unités trouvées (scannées) ;
+ * - `missing` : attendues mais non trouvées (vide si l'article n'est pas compté) ;
+ * - `unexpected` : trouvées mais non attendues (statut autre que « En stock »).
+ * Les unités supprimées depuis sont ignorées.
+ */
+export type CountDiscrepancy = {
+  itemId: string;
+  /** `true` si l'article a le statut « Compté » dans la session. */
+  counted: boolean;
+  expected: Unit[];
+  found: Unit[];
+  missing: Unit[];
+  unexpected: Unit[];
+};
+
+/** Résolution d'un code scanné : unité (numéro de série ou IMEI) ou article (code-barres ou SKU). */
+export type CodeMatch =
+  | { kind: 'unit'; unit: Unit; item: Item }
+  | { kind: 'item'; item: Item };
 
 const MAX_MOVEMENTS = 500;
 const DEFAULT_PREFS: Prefs = { vibration: true };
@@ -173,18 +311,23 @@ function isItem(v: unknown): v is Item {
     isFiniteNumber(v.qty) && v.qty >= 0 &&
     isFiniteNumber(v.min) && v.min >= 0 &&
     isFiniteNumber(v.price) && v.price >= 0 &&
-    (v.photo === undefined || isPhotoName(v.photo))
+    (v.photo === undefined || isPhotoName(v.photo)) &&
+    (v.serialized === undefined || v.serialized === true)
   );
 }
 
 /**
- * Retire un champ `photo` invalide (non-chaîne ou chemin) d'un article stocké
- * plutôt que de rejeter l'article. Renvoie la valeur d'origine sinon.
+ * Retire d'un article stocké un champ `photo` invalide (non-chaîne ou chemin)
+ * et un champ `serialized` autre que `true` (`false` = absent), plutôt que de
+ * rejeter l'article. Renvoie la valeur d'origine si rien n'est retiré.
  */
 function withoutInvalidPhoto(v: unknown): unknown {
-  if (!isRecord(v) || v.photo === undefined || isPhotoName(v.photo)) return v;
-  const { photo: _dropped, ...rest } = v;
-  return rest;
+  if (!isRecord(v)) return v;
+  const badPhoto = v.photo !== undefined && !isPhotoName(v.photo);
+  const badSerialized = v.serialized !== undefined && v.serialized !== true;
+  if (!badPhoto && !badSerialized) return v;
+  const { photo, serialized, ...rest } = v;
+  return { ...rest, ...(badPhoto ? {} : { photo }), ...(badSerialized ? {} : { serialized }) };
 }
 
 function isMovement(v: unknown): v is Movement {
@@ -195,12 +338,42 @@ function isMovement(v: unknown): v is Movement {
     typeof v.sku === 'string' &&
     isMode(v.mode) &&
     isFiniteNumber(v.qty) &&
-    isFiniteNumber(v.ts)
+    isFiniteNumber(v.ts) &&
+    (v.unitId === undefined || typeof v.unitId === 'string') &&
+    (v.serial === undefined || typeof v.serial === 'string')
   );
 }
 
 function isCountEntry(v: unknown): v is CountEntry {
   return isRecord(v) && isFiniteNumber(v.qty) && v.qty >= 0 && isCountStatus(v.status);
+}
+
+/** Copie validée d'une saisie de comptage (identifiants d'unités dédoublonnés). */
+function toCountEntry(e: CountEntry): CountEntry {
+  const raw: unknown = (e as { serials?: unknown }).serials;
+  if (!Array.isArray(raw)) return { qty: e.qty, status: e.status };
+  const serials = [...new Set(raw.filter(isNonEmptyString))];
+  return { qty: e.qty, status: e.status, serials };
+}
+
+const isOptString = (v: unknown, max: number) => v === undefined || (typeof v === 'string' && v.length <= max);
+
+function isUnit(v: unknown): v is Unit {
+  if (!isRecord(v)) return false;
+  if (!isNonEmptyString(v.id) || !isNonEmptyString(v.itemId)) return false;
+  if (typeof v.serial !== 'string') return false;
+  const serial = normalizeSerial(v.serial);
+  if (serial.error !== undefined || serial.serial !== v.serial) return false;
+  return (
+    (v.imei === undefined || isValidImei(v.imei)) &&
+    isUnitStatus(v.status) &&
+    isOptString(v.assignee, ASSIGNEE_MAX_LENGTH) &&
+    // Même règle qu'à l'écriture : un appareil attribué a un attributaire.
+    (v.status !== 'assigned' || (typeof v.assignee === 'string' && v.assignee.trim().length > 0)) &&
+    isOptString(v.note, NOTE_MAX_LENGTH) &&
+    isFiniteNumber(v.receivedAt) &&
+    isFiniteNumber(v.updatedAt)
+  );
 }
 
 function toCountSession(v: unknown): CountSession | null {
@@ -209,7 +382,7 @@ function toCountSession(v: unknown): CountSession | null {
   if (v.completedAt !== undefined && !isFiniteNumber(v.completedAt)) return null;
   const entries: Record<string, CountEntry> = {};
   for (const [itemId, e] of Object.entries(v.entries)) {
-    if (isCountEntry(e)) entries[itemId] = { qty: e.qty, status: e.status };
+    if (isCountEntry(e)) entries[itemId] = toCountEntry(e);
   }
   // `expected` est facultatif (sessions antérieures) : une valeur invalide est
   // ignorée plutôt que de rejeter la session.
@@ -220,6 +393,20 @@ function toCountSession(v: unknown): CountSession | null {
       if (isFiniteNumber(q) && q >= 0) expected[itemId] = q;
     }
   }
+  let expectedUnits: Record<string, string[]> | undefined;
+  if (isRecord(v.expectedUnits)) {
+    expectedUnits = {};
+    for (const [itemId, ids] of Object.entries(v.expectedUnits)) {
+      if (Array.isArray(ids)) expectedUnits[itemId] = [...new Set(ids.filter(isNonEmptyString))];
+    }
+  }
+  let unitSnapshot: Record<string, Unit> | undefined;
+  if (isRecord(v.unitSnapshot)) {
+    unitSnapshot = {};
+    for (const [unitId, u] of Object.entries(v.unitSnapshot)) {
+      if (isUnit(u) && u.id === unitId) unitSnapshot[unitId] = u;
+    }
+  }
   return {
     id: v.id,
     entries,
@@ -227,6 +414,8 @@ function toCountSession(v: unknown): CountSession | null {
     startedAt: v.startedAt,
     ...(v.completedAt !== undefined ? { completedAt: v.completedAt } : {}),
     ...(expected ? { expected } : {}),
+    ...(expectedUnits ? { expectedUnits } : {}),
+    ...(unitSnapshot ? { unitSnapshot } : {}),
   };
 }
 
@@ -248,6 +437,8 @@ function validList<T extends { id: string }>(v: unknown, guard: (x: unknown) => 
 
 type State = {
   items: Item[];
+  /** Unités des articles suivis par numéro de série, par ordre de réception. */
+  units: Unit[];
   movements: Movement[]; // trié du plus récent au plus ancien
   sessions: Record<string, CountSession>;
   prefs: Prefs;
@@ -256,6 +447,8 @@ type State = {
 
 let _state: State | null = null;
 const _pendingCountScans = new Map<string, string>();
+/** Codes lus par le scanner pour un champ de formulaire (voir `setPendingPick`), en mémoire seulement. */
+const _pendingPicks = new Map<string, string>();
 let _photoHooks: PhotoFileHooks | null = null;
 
 /** Enregistré par `data/photos.ts` au chargement du module. */
@@ -291,13 +484,21 @@ function uid(prefix: string): string {
 
 /** État vierge : aucun article, aucun mouvement, aucun comptage. */
 function blankState(prefs: Prefs = DEFAULT_PREFS): State {
-  return { items: [], movements: [], sessions: {}, prefs: { ...prefs } };
+  return { items: [], units: [], movements: [], sessions: {}, prefs: { ...prefs } };
 }
 
 /** Jeu de données d'exemple (`data/mock.ts`), chargé uniquement à la demande. */
 function sampleState(prefs: Prefs): State {
-  const items = sampleItems.map((i) => ({ ...i }));
   const now = Date.now();
+  const units: Unit[] = sampleUnits.map((u, idx) => ({
+    ...u,
+    receivedAt: now - (30 - idx) * 86_400_000,
+    updatedAt: now - (10 - idx) * 3_600_000,
+  }));
+  // Stock dérivé des unités pour les articles suivis par numéro de série.
+  const items = sampleItems.map((i) =>
+    i.serialized ? { ...i, qty: units.filter((u) => u.itemId === i.id && u.status === 'in_stock').length } : { ...i }
+  );
   const movements: Movement[] = sampleRecent.map((r, idx) => ({
     id: `seed-${r.id}`,
     itemId: r.itemId,
@@ -306,7 +507,7 @@ function sampleState(prefs: Prefs): State {
     qty: idx === 0 ? 2 : 10,
     ts: now - (idx + 1) * 60_000,
   }));
-  return { items, movements, sessions: {}, prefs: { ...prefs } };
+  return { items, units, movements, sessions: {}, prefs: { ...prefs } };
 }
 
 function loadPrefs(): Prefs {
@@ -330,11 +531,51 @@ function loadState(): State {
   if (unusable) {
     const blank = blankState(prefs);
     _state = blank;
-    persist('items', 'movements', 'sessions');
+    persist('items', 'units', 'movements', 'sessions');
     return blank;
   }
 
   const itemIds = new Set(items.map((i) => i.id));
+  // Unités : clé absente (installation antérieure) = aucune unité. On écarte
+  // les unités invalides, celles d'un article inconnu ou non suivi, et les
+  // doublons de numéro de série / d'IMEI (la première est conservée).
+  // Mêmes règles qu'à l'écriture (`validateUnit`) : un numéro de série ne
+  // peut pas être l'IMEI d'un autre appareil (tirets et espaces ignorés), ni le
+  // code-barres ou le SKU d'un article.
+  const rawUnits = readJSON<unknown>(KEYS.units, []);
+  const serializedIds = new Set(items.filter((i) => i.serialized).map((i) => i.id));
+  const itemCodes = new Set<string>();
+  for (const i of items) {
+    itemCodes.add(looseKey(i.sku));
+    if (i.barcode !== undefined) itemCodes.add(looseKey(i.barcode));
+  }
+  itemCodes.delete('');
+  const serialKeys = new Set<string>(); // serialKey des numéros de série conservés
+  const serialDigits = new Set<string>(); // les mêmes, tirets retirés (forme IMEI)
+  const imeis = new Set<string>(); // IMEI conservés
+  const units = validList(rawUnits, isUnit).filter((u) => {
+    if (!serializedIds.has(u.itemId)) return false;
+    const sk = serialKey(u.serial);
+    const sd = imeiDigits(sk);
+    if (serialKeys.has(sk) || imeis.has(sd)) return false;
+    if (u.imei !== undefined && (imeis.has(u.imei) || serialDigits.has(u.imei))) return false;
+    if (itemCodes.has(looseKey(u.serial)) || (u.imei !== undefined && itemCodes.has(looseKey(u.imei)))) return false;
+    serialKeys.add(sk);
+    serialDigits.add(sd);
+    if (u.imei !== undefined) imeis.add(u.imei);
+    return true;
+  });
+  // Stock dérivé : resynchronisé s'il diffère des unités stockées.
+  let qtyFixed = false;
+  for (let n = 0; n < items.length; n++) {
+    const it = items[n];
+    if (!it?.serialized) continue;
+    const q = units.filter((u) => u.itemId === it.id && u.status === 'in_stock').length;
+    if (it.qty !== q) {
+      items[n] = { ...it, qty: q };
+      qtyFixed = true;
+    }
+  }
   const rawMovements = readJSON<unknown>(KEYS.movements, []);
   const movements = validList(rawMovements, isMovement)
     .filter((m) => itemIds.has(m.itemId))
@@ -342,8 +583,9 @@ function loadState(): State {
     .slice(0, MAX_MOVEMENTS);
   // Entrées invalides écartées : on réécrit les listes nettoyées au chargement.
   const dirty: Part[] = [];
-  if (!Array.isArray(rawItems) || items.length !== rawItems.length || photoDropped) dirty.push('items');
+  if (!Array.isArray(rawItems) || items.length !== rawItems.length || photoDropped || qtyFixed) dirty.push('items');
   if (!Array.isArray(rawMovements) || movements.length !== rawMovements.length) dirty.push('movements');
+  if (!Array.isArray(rawUnits) || units.length !== rawUnits.length) dirty.push('units');
 
   const sessions: Record<string, CountSession> = {};
   const rawSessions = readJSON<unknown>(KEYS.countSessions, {});
@@ -357,7 +599,7 @@ function loadState(): State {
   const rawMeta = readJSON<unknown>(KEYS.meta, {});
   const lastSavedAt = isRecord(rawMeta) && isFiniteNumber(rawMeta.lastSavedAt) ? rawMeta.lastSavedAt : undefined;
 
-  const loaded: State = { items, movements, sessions, prefs, lastSavedAt };
+  const loaded: State = { items, units, movements, sessions, prefs, lastSavedAt };
   if (dirty.length > 0) {
     _state = loaded;
     persist(...dirty);
@@ -372,7 +614,7 @@ function state(): State {
 
 // ── Écriture ───────────────────────────────────────────────────────────────
 
-type Part = 'items' | 'movements' | 'sessions' | 'prefs';
+type Part = 'items' | 'units' | 'movements' | 'sessions' | 'prefs';
 
 /** Écrit les parties demandées ; renvoie `false` si une écriture a échoué. */
 function persist(...parts: Part[]): boolean {
@@ -380,6 +622,7 @@ function persist(...parts: Part[]): boolean {
   let ok = true;
   for (const p of parts) {
     if (p === 'items') ok = writeJSON(KEYS.items, s.items) && ok;
+    else if (p === 'units') ok = writeJSON(KEYS.units, s.units) && ok;
     else if (p === 'movements') ok = writeJSON(KEYS.movements, s.movements) && ok;
     else if (p === 'sessions') ok = writeJSON(KEYS.countSessions, s.sessions) && ok;
     else ok = writeJSON(KEYS.prefs, s.prefs) && ok;
@@ -392,7 +635,7 @@ function persist(...parts: Part[]): boolean {
 }
 
 function persistAll() {
-  persist('items', 'movements', 'sessions', 'prefs');
+  persist('items', 'units', 'movements', 'sessions', 'prefs');
 }
 
 function replaceItem(updated: Item) {
@@ -400,10 +643,22 @@ function replaceItem(updated: Item) {
   s.items = s.items.map((i) => (i.id === updated.id ? updated : i));
 }
 
-function pushMovement(item: Item, mode: MovementMode, qty: number) {
+function pushMovement(item: Item, mode: MovementMode, qty: number, unit?: Unit) {
   const s = state();
-  const m: Movement = { id: uid('m'), itemId: item.id, sku: item.sku, mode, qty, ts: Date.now() };
+  const m: Movement = {
+    id: uid('m'), itemId: item.id, sku: item.sku, mode, qty, ts: Date.now(),
+    ...(unit ? { unitId: unit.id, serial: unit.serial } : {}),
+  };
   s.movements = [m, ...s.movements].slice(0, MAX_MOVEMENTS);
+}
+
+/** Recalcule le stock dérivé d'un article suivi par numéro de série. */
+function syncDerivedQty(itemId: string): void {
+  const s = state();
+  const item = s.items.find((i) => i.id === itemId);
+  if (!item?.serialized) return;
+  const qty = s.units.filter((u) => u.itemId === itemId && u.status === 'in_stock').length;
+  if (qty !== item.qty) replaceItem({ ...item, qty });
 }
 
 // ── Articles ───────────────────────────────────────────────────────────────
@@ -417,6 +672,8 @@ export function getItem(id: string): Item | undefined {
 }
 
 const norm = (s: string) => s.trim().toLowerCase();
+
+const UNIT_CODE_CONFLICT = "Ce code est déjà utilisé comme numéro de série ou IMEI d'un appareil.";
 
 /**
  * Clé de comparaison d'un code : un EAN-13 commençant par 0 est le même code
@@ -449,6 +706,26 @@ function isCodeTaken(code: string, exceptId?: string): boolean {
   );
 }
 
+/**
+ * Clé « large » pour détecter les ambiguïtés entre codes d'articles et codes
+ * d'unités : espaces retirés, puis `codeKey` (casse et 0 de tête EAN-13/UPC-A).
+ */
+const looseKey = (s: string) => codeKey(s.replace(/\s+/g, ''));
+
+/** `true` si `code` correspond au code-barres ou au SKU d'un article. */
+function isItemCode(code: string): boolean {
+  const c = looseKey(code);
+  if (!c) return false;
+  return state().items.some((i) => looseKey(i.sku) === c || (i.barcode !== undefined && looseKey(i.barcode) === c));
+}
+
+/** `true` si `code` correspond au numéro de série ou à l'IMEI d'une unité. */
+function isUnitCode(code: string): boolean {
+  const c = looseKey(code);
+  if (!c) return false;
+  return state().units.some((u) => looseKey(u.serial) === c || (u.imei !== undefined && u.imei === c));
+}
+
 /** Prochaine référence `SKU-n` libre (et différente de `avoid`, le code-barres saisi). */
 function nextSku(avoid?: string): string {
   let n = 1000;
@@ -457,7 +734,7 @@ function nextSku(avoid?: string): string {
     if (m) n = Math.max(n, Number(m[1]) + 1);
   }
   const avoidKey = avoid ? codeKey(avoid) : '';
-  while (isCodeTaken(`SKU-${n}`) || codeKey(`SKU-${n}`) === avoidKey) n++;
+  while (isCodeTaken(`SKU-${n}`) || isUnitCode(`SKU-${n}`) || codeKey(`SKU-${n}`) === avoidKey) n++;
   return `SKU-${n}`;
 }
 
@@ -482,7 +759,15 @@ export function createItem(input: NewItemInput): CreateItemResult {
   if (barcode && isCodeTaken(barcode)) return { error: 'Ce code-barres est déjà utilisé par un autre article.', field: 'barcode' };
   if (sku && isCodeTaken(sku)) return { error: 'Cette référence (SKU) est déjà utilisée.', field: 'sku' };
   if (barcode && sku && codeKey(barcode) === codeKey(sku)) return { error: 'Le SKU doit être différent du code-barres.', field: 'sku' };
+  if (barcode && isUnitCode(barcode)) return { error: UNIT_CODE_CONFLICT, field: 'barcode' };
+  if (sku && isUnitCode(sku)) return { error: UNIT_CODE_CONFLICT, field: 'sku' };
   if (input.photo !== undefined && !isPhotoName(input.photo)) return { error: 'Photo invalide.', field: 'photo' };
+  if (input.serialized === true && input.qty !== 0) {
+    return {
+      error: 'Un article suivi par numéro de série démarre avec un stock de 0 : ajoutez ensuite les numéros de série de chaque appareil.',
+      field: 'qty',
+    };
+  }
 
   const item: Item = {
     id: nextItemId(),
@@ -494,6 +779,7 @@ export function createItem(input: NewItemInput): CreateItemResult {
     min: input.min,
     price: input.price,
     ...(input.photo !== undefined ? { photo: input.photo } : {}),
+    ...(input.serialized === true ? { serialized: true } : {}),
   };
 
   const s = state();
@@ -531,12 +817,32 @@ export function updateItem(id: string, patch: UpdateItemPatch): UpdateItemResult
   if (barcode && isCodeTaken(barcode, id)) return { error: 'Ce code-barres est déjà utilisé par un autre article.', field: 'barcode' };
   if (skuInput && isCodeTaken(skuInput, id)) return { error: 'Cette référence (SKU) est déjà utilisée.', field: 'sku' };
   if (barcode && skuInput && codeKey(barcode) === codeKey(skuInput)) return { error: 'Le SKU doit être différent du code-barres.', field: 'sku' };
+  if (barcode && barcode !== current.barcode && isUnitCode(barcode)) return { error: UNIT_CODE_CONFLICT, field: 'barcode' };
+  if (skuInput && skuInput !== current.sku && isUnitCode(skuInput)) return { error: UNIT_CODE_CONFLICT, field: 'sku' };
   if (photo !== undefined && !isPhotoName(photo)) return { error: 'Photo invalide.', field: 'photo' };
+
+  const wasSerialized = current.serialized === true;
+  const serialized = patch.serialized ?? wasSerialized;
+  if (serialized && !wasSerialized && current.qty !== 0) {
+    return {
+      error: `Mettez le stock à 0 avant d'activer le suivi par numéro de série (stock actuel : ${current.qty}). Les appareils seront ensuite ajoutés un par un avec leur numéro de série.`,
+      field: 'serialized',
+    };
+  }
+  if (!serialized && wasSerialized) {
+    const n = state().units.filter((u) => u.itemId === id).length;
+    if (n > 0) {
+      return {
+        error: `Supprimez d'abord les ${n} numéro(s) de série de cet article avant de désactiver le suivi par numéro de série.`,
+        field: 'serialized',
+      };
+    }
+  }
 
   // SKU vidé : nouvelle référence, comme à la création.
   const sku = skuInput || nextSku(barcode);
 
-  const { barcode: _oldBarcode, photo: _oldPhoto, ...base } = current;
+  const { barcode: _oldBarcode, photo: _oldPhoto, serialized: _oldSerialized, ...base } = current;
   const updated: Item = {
     ...base,
     name,
@@ -546,19 +852,38 @@ export function updateItem(id: string, patch: UpdateItemPatch): UpdateItemResult
     min,
     price,
     ...(photo !== undefined ? { photo } : {}),
+    ...(serialized ? { serialized: true } : {}),
   };
   replaceItem(updated);
+  // Changement de mode de suivi : la saisie de comptage en cours de l'article
+  // (quantité ↔ numéros de série) n'a plus de sens ; il redevient « À compter ».
+  let sessionsChanged = false;
+  if (serialized !== wasSerialized) {
+    const st = state();
+    const sessions: Record<string, CountSession> = {};
+    for (const [sid, session] of Object.entries(st.sessions)) {
+      if (session.completedAt === undefined && session.entries[id] !== undefined) {
+        const { [id]: _entry, ...entries } = session.entries;
+        sessions[sid] = { ...session, entries };
+        sessionsChanged = true;
+      } else {
+        sessions[sid] = session;
+      }
+    }
+    st.sessions = sessions;
+  }
   // L'ancienne photo n'est supprimée qu'une fois l'article enregistré : en cas
   // d'échec d'écriture, l'article stocké la référence encore.
-  const saved = persist('items');
+  const saved = sessionsChanged ? persist('items', 'sessions') : persist('items');
   if (saved && current.photo !== undefined && current.photo !== photo) removePhotoFile(current.photo);
   return { item: updated };
 }
 
 /**
- * Supprime un article avec ses mouvements, ses saisies dans les comptages
- * (et son stock attendu dans les comptages terminés), un éventuel scan de
- * comptage en attente pointant vers lui, et sa photo.
+ * Supprime un article avec ses unités (numéros de série), ses mouvements, ses
+ * saisies dans les comptages (et son stock attendu dans les comptages
+ * terminés), un éventuel scan de comptage en attente pointant vers lui ou
+ * l'une de ses unités, et sa photo.
  */
 export function deleteItem(id: string): DeleteItemResult {
   const item = getItem(id);
@@ -572,7 +897,9 @@ export function deleteItem(id: string): DeleteItemResult {
     positions.set(sid, { pos: list.findIndex((i) => i.id === id), len: list.length });
   }
 
+  const itemUnits = s.units.filter((u) => u.itemId === id);
   s.items = s.items.filter((i) => i.id !== id);
+  s.units = s.units.filter((u) => u.itemId !== id);
   s.movements = s.movements.filter((m) => m.itemId !== id);
 
   const sessions: Record<string, CountSession> = {};
@@ -582,6 +909,13 @@ export function deleteItem(id: string): DeleteItemResult {
     if (session.expected) {
       const { [id]: _expected, ...expected } = session.expected;
       next.expected = expected;
+    }
+    if (session.expectedUnits) {
+      const { [id]: _expectedUnits, ...expectedUnits } = session.expectedUnits;
+      next.expectedUnits = expectedUnits;
+    }
+    if (session.unitSnapshot) {
+      next.unitSnapshot = Object.fromEntries(Object.entries(session.unitSnapshot).filter(([, u]) => u.itemId !== id));
     }
     if (session.completedAt === undefined) {
       // Comptage en cours : l'index reste sur le même article, dans les bornes.
@@ -595,15 +929,22 @@ export function deleteItem(id: string): DeleteItemResult {
   s.sessions = sessions;
 
   const codes = new Set([codeKey(item.sku), ...(item.barcode !== undefined ? [codeKey(item.barcode)] : [])]);
+  const unitIds = new Set(itemUnits.map((u) => u.id));
   for (const [countId, code] of _pendingCountScans) {
-    if (codes.has(codeKey(code))) _pendingCountScans.delete(countId);
+    const unit = findUnitIn(itemUnits, code);
+    if (codes.has(codeKey(code)) || (unit && unitIds.has(unit.id))) _pendingCountScans.delete(countId);
   }
 
-  if (persist('items', 'movements', 'sessions')) removePhotoFile(item.photo);
+  if (persist('items', 'units', 'movements', 'sessions')) removePhotoFile(item.photo);
   return { ok: true };
 }
 
 // ── Mouvements ─────────────────────────────────────────────────────────────
+
+const SERIALIZED_MOVEMENT_ERROR =
+  'Cet article est suivi par numéro de série : scannez le numéro de série (ou l\'IMEI) de chaque appareil au lieu de saisir une quantité.';
+const SERIALIZED_ADJUST_ERROR =
+  'Cet article est suivi par numéro de série : son stock est calculé à partir des appareils « En stock ». Ajoutez ou modifiez les numéros de série au lieu d\'ajuster la quantité.';
 
 /** Mouvements du plus récent au plus ancien (500 au maximum). */
 export function getMovements(): Movement[] {
@@ -613,7 +954,8 @@ export function getMovements(): Movement[] {
 /** Enregistre un mouvement Entrée/Sortie. Renvoie un message d'erreur ou null. */
 export function commitMovement(code: string, mode: MovementMode, qty: number): string | null {
   const item = findItemByCode(code);
-  if (!item) return 'Article introuvable.';
+  if (!item) return findUnitByCode(code) ? SERIALIZED_MOVEMENT_ERROR : 'Article introuvable.';
+  if (item.serialized) return SERIALIZED_MOVEMENT_ERROR;
   if (!Number.isInteger(qty) || qty <= 0) return 'La quantité doit être un entier supérieur à 0.';
   if (mode === 'Sortie' && qty > item.qty) {
     return `Stock insuffisant. Disponible : ${item.qty} unité(s).`;
@@ -630,6 +972,7 @@ export function commitMovement(code: string, mode: MovementMode, qty: number): s
 export function adjustStock(itemId: string, newQty: number): string | null {
   const item = getItem(itemId);
   if (!item) return 'Article introuvable.';
+  if (item.serialized) return SERIALIZED_ADJUST_ERROR;
   if (!Number.isInteger(newQty) || newQty < 0) return 'La quantité doit être un entier positif ou nul.';
 
   const diff = newQty - item.qty;
@@ -640,6 +983,208 @@ export function adjustStock(itemId: string, newQty: number): string | null {
   pushMovement(updated, diff > 0 ? 'Entrée' : 'Sortie', Math.abs(diff));
   persist('items', 'movements');
   return null;
+}
+
+// ── Unités (numéros de série) ──────────────────────────────────────────────
+
+/** Unités, par ordre de réception ; filtrées sur un article si `itemId` est fourni. */
+export function getUnits(itemId?: string): Unit[] {
+  const units = state().units;
+  return itemId === undefined ? units : units.filter((u) => u.itemId === itemId);
+}
+
+export function getUnit(id: string): Unit | undefined {
+  return state().units.find((u) => u.id === id);
+}
+
+/** Recherche par numéro de série (`serialKey`) puis par IMEI (espaces et tirets ignorés). */
+function findUnitIn(units: readonly Unit[], code: string): Unit | undefined {
+  const k = serialKey(code);
+  if (!k) return undefined;
+  const bySerial = units.find((u) => serialKey(u.serial) === k);
+  if (bySerial) return bySerial;
+  const d = imeiDigits(code.trim());
+  return /^\d{15}$/.test(d) ? units.find((u) => u.imei === d) : undefined;
+}
+
+/** Unité dont le numéro de série ou l'IMEI correspond à `code`. */
+export function findUnitByCode(code: string): Unit | undefined {
+  return findUnitIn(state().units, code);
+}
+
+/**
+ * Résout un code scanné : article (code-barres ou SKU) ou unité (numéro de
+ * série ou IMEI, avec son article). `null` si le code est inconnu.
+ */
+export function findByCode(code: string): CodeMatch | null {
+  const item = findItemByCode(code);
+  if (item) return { kind: 'item', item };
+  const unit = findUnitByCode(code);
+  const unitItem = unit ? getItem(unit.itemId) : undefined;
+  return unit && unitItem ? { kind: 'unit', unit, item: unitItem } : null;
+}
+
+type UnitFields = Pick<Unit, 'serial' | 'imei' | 'status' | 'assignee' | 'note'>;
+type UnitDraft = { serial: string; imei?: string; status: UnitStatus; assignee?: string; note?: string };
+
+const itemLabel = (itemId: string) => {
+  const name = getItem(itemId)?.name;
+  return name ? ` (article « ${name} »)` : '';
+};
+
+/** Valide une unité (hors unité `exceptId`). */
+function validateUnit(d: UnitDraft, exceptId?: string): { fields: UnitFields } | { error: string; field: UnitField } {
+  const others = state().units.filter((u) => u.id !== exceptId);
+
+  const sr = normalizeSerial(d.serial);
+  if (sr.error !== undefined) return { error: sr.error, field: 'serial' };
+  const serial = sr.serial;
+  const sk = serialKey(serial);
+  // Un numéro de série qui, tirets retirés, est l'IMEI d'un autre appareil
+  // rendrait le scan ambigu (l'IMEI est aussi recherché sans tirets).
+  const sd = imeiDigits(sk);
+  const dupSerial = others.find((u) => serialKey(u.serial) === sk || u.imei === sd);
+  if (dupSerial) return { error: `Ce numéro de série est déjà enregistré${itemLabel(dupSerial.itemId)}.`, field: 'serial' };
+  if (isItemCode(serial)) return { error: "Ce numéro de série est déjà utilisé comme code-barres ou SKU d'un article.", field: 'serial' };
+  // Le numéro de série est l'identifiant de l'import Jira Assets : il doit y
+  // arriver tel quel, sans la neutralisation des formules (`'` ajoutée devant
+  // = + @). Un numéro déjà enregistré ainsi reste modifiable.
+  const currentSerial = exceptId !== undefined ? state().units.find((u) => u.id === exceptId)?.serial : undefined;
+  if (/^[=+@]/.test(serial) && serial !== currentSerial) {
+    return { error: 'Le numéro de série ne peut pas commencer par =, + ou @.', field: 'serial' };
+  }
+
+  let imei: string | undefined;
+  const rawImei = d.imei?.trim() ?? '';
+  if (rawImei) {
+    const ir = normalizeImei(rawImei);
+    if (ir.error !== undefined) return { error: ir.error, field: 'imei' };
+    imei = ir.imei;
+    const dupImei = others.find((u) => u.imei === imei || imeiDigits(serialKey(u.serial)) === imei);
+    if (dupImei) return { error: `Cet IMEI est déjà enregistré${itemLabel(dupImei.itemId)}.`, field: 'imei' };
+    if (isItemCode(imei)) return { error: "Cet IMEI est déjà utilisé comme code-barres ou SKU d'un article.", field: 'imei' };
+  }
+
+  if (!isUnitStatus(d.status)) return { error: 'Statut invalide.', field: 'status' };
+
+  const assignee = d.assignee?.trim() ?? '';
+  if (d.status === 'assigned' && !assignee) return { error: "Indiquez à qui l'appareil est attribué.", field: 'assignee' };
+  if (assignee.length > ASSIGNEE_MAX_LENGTH) {
+    return { error: `Le nom de l'attributaire ne doit pas dépasser ${ASSIGNEE_MAX_LENGTH} caractères.`, field: 'assignee' };
+  }
+  const note = d.note?.trim() ?? '';
+  if (note.length > NOTE_MAX_LENGTH) return { error: `La note ne doit pas dépasser ${NOTE_MAX_LENGTH} caractères.`, field: 'note' };
+
+  return {
+    fields: {
+      serial,
+      ...(imei !== undefined ? { imei } : {}),
+      status: d.status,
+      // L'attributaire n'a de sens que pour un appareil attribué.
+      ...(d.status === 'assigned' ? { assignee } : {}),
+      ...(note ? { note } : {}),
+    },
+  };
+}
+
+/**
+ * Remplace une unité et trace le passage de la frontière « En stock » :
+ * sortie du stock = Sortie de 1, entrée dans le stock = Entrée de 1.
+ * Le stock dérivé de l'article est recalculé. N'écrit rien.
+ */
+function applyUnit(prev: Unit, next: Unit): boolean {
+  const s = state();
+  s.units = s.units.map((u) => (u.id === prev.id ? next : u));
+  const item = getItem(next.itemId);
+  const moved = (prev.status === 'in_stock') !== (next.status === 'in_stock');
+  if (item && moved) pushMovement(item, next.status === 'in_stock' ? 'Entrée' : 'Sortie', 1, next);
+  syncDerivedQty(next.itemId);
+  return moved;
+}
+
+/**
+ * Ajoute un appareil (numéro de série) à un article suivi par numéro de
+ * série. Un appareil « En stock » enregistre une Entrée de 1.
+ */
+export function addUnit(itemId: string, input: NewUnitInput): UnitResult {
+  const item = getItem(itemId);
+  if (!item) return { error: 'Article introuvable.', field: 'itemId' };
+  if (!item.serialized) {
+    return { error: "Cet article n'est pas suivi par numéro de série. Activez d'abord le suivi dans la fiche de l'article.", field: 'itemId' };
+  }
+  const v = validateUnit({ ...input, status: input.status ?? 'in_stock' });
+  if ('error' in v) return v;
+
+  const now = Date.now();
+  const unit: Unit = { id: uid('u'), itemId, ...v.fields, receivedAt: now, updatedAt: now };
+  const s = state();
+  s.units = [...s.units, unit];
+  if (unit.status === 'in_stock') pushMovement(item, 'Entrée', 1, unit);
+  syncDerivedQty(itemId);
+  persist('items', 'units', 'movements');
+  return { unit };
+}
+
+/**
+ * Modifie un appareil (mêmes règles que `addUnit`, hors lui-même). Un
+ * changement de statut qui fait sortir l'appareil du stock enregistre une
+ * Sortie de 1 ; un retour en stock, une Entrée de 1.
+ */
+export function updateUnit(id: string, patch: UpdateUnitPatch): UnitResult {
+  const current = getUnit(id);
+  if (!current) return { error: 'Numéro de série introuvable.', field: 'id' };
+  const status = patch.status ?? current.status;
+  const v = validateUnit(
+    {
+      serial: patch.serial ?? current.serial,
+      imei: patch.imei ?? current.imei,
+      status,
+      // Passage à « Attribué » sans attributaire fourni : on reprend l'éventuel attributaire actuel.
+      assignee: patch.assignee ?? current.assignee,
+      note: patch.note ?? current.note,
+    },
+    id
+  );
+  if ('error' in v) return v;
+
+  const { imei: _i, assignee: _a, note: _n, ...base } = current;
+  const unit: Unit = { ...base, ...v.fields, updatedAt: Date.now() };
+  applyUnit(current, unit);
+  persist('items', 'units', 'movements');
+  return { unit };
+}
+
+/**
+ * Supprime un appareil. Choix : s'il était « En stock », une Sortie de 1 est
+ * enregistrée (le stock dérivé baisse, le changement reste tracé) ; sinon
+ * aucun mouvement. Il est retiré des comptages en cours (quantité trouvée
+ * recalculée) ; les comptages terminés gardent leur instantané.
+ */
+export function deleteUnit(id: string): DeleteUnitResult {
+  const unit = getUnit(id);
+  if (!unit) return { ok: false, error: 'Numéro de série introuvable.' };
+  const s = state();
+  s.units = s.units.filter((u) => u.id !== id);
+  const item = getItem(unit.itemId);
+  if (item && unit.status === 'in_stock') pushMovement(item, 'Sortie', 1, unit);
+  syncDerivedQty(unit.itemId);
+
+  const sessions: Record<string, CountSession> = {};
+  for (const [sid, session] of Object.entries(s.sessions)) {
+    const e = session.entries[unit.itemId];
+    if (session.completedAt === undefined && e?.serials?.includes(id)) {
+      const serials = e.serials.filter((x) => x !== id);
+      sessions[sid] = { ...session, entries: { ...session.entries, [unit.itemId]: { ...e, serials, qty: serials.length } } };
+    } else {
+      sessions[sid] = session;
+    }
+  }
+  s.sessions = sessions;
+  for (const [countId, code] of _pendingCountScans) {
+    if (findUnitIn([unit], code)) _pendingCountScans.delete(countId);
+  }
+  persist('items', 'units', 'movements', 'sessions');
+  return { ok: true };
 }
 
 // ── Comptage cyclique ──────────────────────────────────────────────────────
@@ -668,7 +1213,13 @@ export function getCountSession(id: string): CountSession | undefined {
   if (id !== CYCLE_COUNT.id) return undefined;
   const s = state().sessions[id];
   if (!s) return freshSession(id);
-  return { ...s, entries: { ...s.entries }, ...(s.expected ? { expected: { ...s.expected } } : {}) };
+  return {
+    ...s,
+    entries: { ...s.entries },
+    ...(s.expected ? { expected: { ...s.expected } } : {}),
+    ...(s.expectedUnits ? { expectedUnits: { ...s.expectedUnits } } : {}),
+    ...(s.unitSnapshot ? { unitSnapshot: { ...s.unitSnapshot } } : {}),
+  };
 }
 
 /** Vrai si une session est enregistrée (comptage démarré). */
@@ -702,19 +1253,123 @@ function writableSession(id: string): CountSession | string {
   return session;
 }
 
-/** Enregistre le résultat d'un article. Renvoie un message d'erreur ou null. */
+/**
+ * Enregistre le résultat d'un article. Renvoie un message d'erreur ou null.
+ * Article suivi par numéro de série : `entry.serials` liste les identifiants
+ * des unités trouvées (absent = aucune) et `qty` est ignoré (= leur nombre).
+ */
 export function saveCountEntry(id: string, itemId: string, entry: CountEntry): string | null {
   if (id !== CYCLE_COUNT.id) return 'Comptage introuvable.';
   const list = getCountItems(id);
   if (list.length === 0) return 'Aucun article à compter. Ajoutez des articles à l\'inventaire.';
-  if (!list.some((i) => i.id === itemId)) return 'Article hors comptage.';
-  if (!Number.isInteger(entry.qty) || entry.qty < 0) return 'La quantité ne peut pas être négative.';
+  const item = list.find((i) => i.id === itemId);
+  if (!item) return 'Article hors comptage.';
   if (!isCountStatus(entry.status)) return 'Statut invalide.';
+  let next: CountEntry;
+  if (item.serialized) {
+    const serials = [...new Set(Array.isArray(entry.serials) ? entry.serials : [])];
+    for (const uidFound of serials) {
+      const u = getUnit(uidFound);
+      if (!u) return 'Numéro de série introuvable.';
+      if (u.itemId !== itemId) return 'Ce numéro de série appartient à un autre article.';
+    }
+    next = { qty: serials.length, status: entry.status, serials };
+  } else {
+    if (!Number.isInteger(entry.qty) || entry.qty < 0) return 'La quantité ne peut pas être négative.';
+    next = { qty: entry.qty, status: entry.status };
+  }
   const session = writableSession(id);
   if (typeof session === 'string') return session;
-  session.entries = { ...session.entries, [itemId]: { qty: entry.qty, status: entry.status } };
+  session.entries = { ...session.entries, [itemId]: next };
   persist('sessions');
   return null;
+}
+
+/**
+ * Scan d'un numéro de série (ou IMEI) pendant le comptage : l'unité est
+ * ajoutée aux unités trouvées de son article, qui passe « Compté ». Un
+ * second scan de la même unité ne change rien (`duplicate: true`).
+ */
+export function markUnitFound(countId: string, code: string): MarkUnitFoundResult {
+  if (countId !== CYCLE_COUNT.id) return { ok: false, error: 'Comptage introuvable.' };
+  const unit = findUnitByCode(code);
+  if (!unit) return { ok: false, error: `Numéro de série inconnu : ${code.trim()}` };
+  const item = getCountItems(countId).find((i) => i.id === unit.itemId);
+  if (!item) return { ok: false, error: `Article hors comptage : ${getItem(unit.itemId)?.name ?? unit.serial}` };
+  if (!item.serialized) return { ok: false, error: "Cet article n'est pas suivi par numéro de série." };
+  const session = writableSession(countId);
+  if (typeof session === 'string') return { ok: false, error: session };
+
+  const prev = session.entries[item.id];
+  const serials = prev?.serials ?? [];
+  const duplicate = serials.includes(unit.id) && prev?.status === 'Compté';
+  if (!duplicate) {
+    const next = serials.includes(unit.id) ? serials : [...serials, unit.id];
+    session.entries = { ...session.entries, [item.id]: { qty: next.length, status: 'Compté', serials: next } };
+    persist('sessions');
+  }
+  return { ok: true, itemId: item.id, unitId: unit.id, duplicate };
+}
+
+/** Retire une unité des unités trouvées (scan par erreur). Renvoie un message d'erreur ou null. */
+export function unmarkUnitFound(countId: string, unitId: string): string | null {
+  if (countId !== CYCLE_COUNT.id) return 'Comptage introuvable.';
+  const unit = getUnit(unitId);
+  if (!unit) return 'Numéro de série introuvable.';
+  const session = writableSession(countId);
+  if (typeof session === 'string') return session;
+  const prev = session.entries[unit.itemId];
+  if (!prev?.serials?.includes(unitId)) return null;
+  const serials = prev.serials.filter((x) => x !== unitId);
+  session.entries = { ...session.entries, [unit.itemId]: { ...prev, serials, qty: serials.length } };
+  persist('sessions');
+  return null;
+}
+
+/**
+ * Écarts par article suivi par numéro de série, dans l'ordre du comptage
+ * (voir `CountDiscrepancy`). Comptage terminé : les unités attendues sont
+ * celles figées à la clôture (`expectedUnits`) ; un article sans instantané
+ * (suivi en quantité à la clôture) n'apparaît pas.
+ */
+export function getCountDiscrepancies(countId: string = CYCLE_COUNT.id): CountDiscrepancy[] {
+  if (countId !== CYCLE_COUNT.id) return [];
+  const s = state();
+  const session = s.sessions[countId];
+  const completed = session?.completedAt !== undefined;
+  const byId = new Map(s.units.map((u) => [u.id, u]));
+  // Comptage terminé : un appareil supprimé depuis la clôture est repris de l'instantané.
+  const snapshot = completed ? session?.unitSnapshot : undefined;
+  const resolve = (ids: readonly string[]) =>
+    ids.map((x) => byId.get(x) ?? snapshot?.[x]).filter((u): u is Unit => u !== undefined);
+  const out: CountDiscrepancy[] = [];
+  for (const item of getCountItems(countId)) {
+    let expectedIds: string[];
+    if (completed) {
+      const snap = session?.expectedUnits?.[item.id];
+      if (snap === undefined) continue;
+      expectedIds = snap;
+    } else {
+      if (!item.serialized) continue;
+      expectedIds = s.units.filter((u) => u.itemId === item.id && u.status === 'in_stock').map((u) => u.id);
+    }
+    const e = session?.entries[item.id];
+    const counted = e?.status === 'Compté';
+    const foundIds = e?.serials ?? [];
+    const foundSet = new Set(foundIds);
+    const expectedSet = new Set(expectedIds);
+    const expected = resolve(expectedIds);
+    const found = resolve(foundIds);
+    out.push({
+      itemId: item.id,
+      counted,
+      expected,
+      found,
+      missing: counted ? expected.filter((u) => !foundSet.has(u.id)) : [],
+      unexpected: found.filter((u) => !expectedSet.has(u.id)),
+    });
+  }
+  return out;
 }
 
 export function setCountIndex(id: string, idx: number): void {
@@ -728,9 +1383,14 @@ export function setCountIndex(id: string, idx: number): void {
 
 /**
  * Clôture le comptage. Le stock de chaque article est d'abord mémorisé dans
- * `session.expected` (stock attendu de l'export CSV). Si `applyAdjustments`,
- * chaque article « Compté » dont la quantité diffère du stock est ajusté,
- * avec un mouvement Entrée/Sortie.
+ * `session.expected` (stock attendu de l'export CSV) et, pour les articles
+ * suivis par numéro de série, la liste des unités « En stock » dans
+ * `session.expectedUnits`. Si `applyAdjustments`, pour chaque article « Compté » :
+ * - suivi en quantité : le stock est ajusté s'il diffère, avec un mouvement ;
+ * - suivi par numéro de série : chaque unité attendue non trouvée passe
+ *   « Manquant » (Sortie de 1) et chaque unité trouvée qui n'était pas
+ *   « En stock » y revient (Entrée de 1, attributaire retiré) ; le stock
+ *   dérivé est recalculé.
  */
 export function completeCount(id: string, applyAdjustments: boolean): CompleteCountResult {
   if (id !== CYCLE_COUNT.id) return { ok: false, error: 'Comptage introuvable.' };
@@ -740,15 +1400,44 @@ export function completeCount(id: string, applyAdjustments: boolean): CompleteCo
   const session = writableSession(id);
   if (typeof session === 'string') return { ok: false, error: session };
 
+  const s = state();
   const expected: Record<string, number> = {};
-  for (const item of getCountItems(id)) expected[item.id] = item.qty;
+  const expectedUnits: Record<string, string[]> = {};
+  for (const item of getCountItems(id)) {
+    expected[item.id] = item.qty;
+    if (item.serialized) {
+      expectedUnits[item.id] = s.units.filter((u) => u.itemId === item.id && u.status === 'in_stock').map((u) => u.id);
+    }
+  }
   session.expected = expected;
+  if (Object.keys(expectedUnits).length > 0) session.expectedUnits = expectedUnits;
+  else delete session.expectedUnits;
 
   let adjusted = 0;
+  let unitsUpdated = 0;
   if (applyAdjustments) {
     for (const item of getCountItems(id)) {
       const e = session.entries[item.id];
-      if (!e || e.status !== 'Compté' || e.qty === item.qty) continue;
+      if (!e || e.status !== 'Compté') continue;
+      if (item.serialized) {
+        const found = new Set(e.serials ?? []);
+        const exp = new Set(expectedUnits[item.id] ?? []);
+        const now = Date.now();
+        let changed = false;
+        for (const unit of s.units.filter((u) => u.itemId === item.id)) {
+          let status: UnitStatus | null = null;
+          if (unit.status === 'in_stock' && exp.has(unit.id) && !found.has(unit.id)) status = 'missing';
+          else if (unit.status !== 'in_stock' && found.has(unit.id)) status = 'in_stock';
+          if (!status) continue;
+          const { assignee: _a, ...rest } = unit;
+          applyUnit(unit, { ...rest, status, updatedAt: now });
+          unitsUpdated++;
+          changed = true;
+        }
+        if (changed) adjusted++;
+        continue;
+      }
+      if (e.qty === item.qty) continue;
       const diff = e.qty - item.qty;
       const updated: Item = { ...item, qty: e.qty };
       replaceItem(updated);
@@ -756,9 +1445,19 @@ export function completeCount(id: string, applyAdjustments: boolean): CompleteCo
       adjusted++;
     }
   }
+  // Instantané des unités attendues et trouvées (état après ajustement).
+  const snapIds = new Set<string>();
+  for (const ids of Object.values(expectedUnits)) ids.forEach((x) => snapIds.add(x));
+  for (const item of getCountItems(id)) {
+    if (item.serialized) session.entries[item.id]?.serials?.forEach((x) => snapIds.add(x));
+  }
+  const unitSnapshot: Record<string, Unit> = {};
+  for (const u of s.units) if (snapIds.has(u.id)) unitSnapshot[u.id] = u;
+  if (Object.keys(unitSnapshot).length > 0) session.unitSnapshot = unitSnapshot;
+  else delete session.unitSnapshot;
   session.completedAt = Date.now();
-  persist('items', 'movements', 'sessions');
-  return { ok: true, adjusted };
+  persist('items', 'units', 'movements', 'sessions');
+  return { ok: true, adjusted, unitsUpdated };
 }
 
 /** Démarre une nouvelle session (la précédente est effacée). */
@@ -778,6 +1477,21 @@ export function setPendingCountScan(countId: string, code: string): void {
 export function consumePendingCountScan(countId: string): string | null {
   const code = _pendingCountScans.get(countId) ?? null;
   _pendingCountScans.delete(countId);
+  return code;
+}
+
+/** Champ d'un formulaire d'appareil rempli par le scanner (`/scan?pick=…`). */
+export type PickTarget = 'serial' | 'imei';
+
+/** Code lu par le scanner en mode « sélection », transmis au formulaire au retour. */
+export function setPendingPick(target: PickTarget, code: string): void {
+  _pendingPicks.set(target, code);
+}
+
+/** Lit et efface le code en attente pour `target` (`null` si aucun). */
+export function consumePendingPick(target: PickTarget): string | null {
+  const code = _pendingPicks.get(target) ?? null;
+  _pendingPicks.delete(target);
   return code;
 }
 
@@ -803,12 +1517,13 @@ export function resetAllData(): void {
   removeAllPhotoFiles();
   clearAll();
   _pendingCountScans.clear();
+  _pendingPicks.clear();
   _state = blankState();
   persistAll();
 }
 
 /**
- * Remplace les articles, mouvements et comptages actuels par les données
+ * Remplace les articles, unités, mouvements et comptages actuels par les données
  * d'exemple de `data/mock.ts` (préférences conservées, photos supprimées).
  * Utilisé uniquement depuis Profil › Stockage local.
  */
@@ -816,8 +1531,9 @@ export function loadSampleData(): void {
   const prev = state();
   removeAllPhotoFiles();
   _pendingCountScans.clear();
+  _pendingPicks.clear();
   _state = { ...sampleState(prev.prefs), ...(prev.lastSavedAt !== undefined ? { lastSavedAt: prev.lastSavedAt } : {}) };
-  persist('items', 'movements', 'sessions');
+  persist('items', 'units', 'movements', 'sessions');
 }
 
 export function getStorageInfo(): StorageInfo {
@@ -827,6 +1543,7 @@ export function getStorageInfo(): StorageInfo {
     ...(s.lastSavedAt !== undefined ? { lastSavedAt: s.lastSavedAt } : {}),
     itemCount: s.items.length,
     movementCount: s.movements.length,
+    unitCount: s.units.length,
   };
 }
 
