@@ -2,7 +2,21 @@
 
 Application de terrain pour la gestion de stock : accueil orienté tâches, liste des articles, fiche détail, scanner de codes-barres (entrées / sorties), tâches et comptage cyclique.
 
-> Les données sont des **données d'exemple** (`data/mock.ts`), gardées en mémoire par `data/store.ts`. Remplacez-les par votre API.
+L'application fonctionne **entièrement hors ligne**, sans serveur : articles, mouvements, comptages et préférences sont enregistrés sur l'appareil. Au premier lancement, elle est initialisée avec les données d'exemple de `data/mock.ts`.
+
+## Stockage hors ligne
+
+- Les données sont persistées avec **react-native-mmkv** (v4, Nitro Modules) via `data/storage.ts` ; `data/store.ts` expose une API synchrone aux écrans et enregistre chaque modification immédiatement.
+- Clés versionnées (`schemaVersion` = 1, données sous `v1.items`, `v1.movements`, `v1.countSessions`, `v1.prefs`, `v1.meta`). Les données absentes, corrompues ou invalides sont ignorées et remplacées par les données d'exemple.
+- MMKV est un module natif : il faut un **build de développement** (`eas build --profile development` ou `npx expo run:android`). Dans **Expo Go**, le module est absent : l'application fonctionne quand même mais avec un **stockage temporaire** en mémoire (bandeau « Stockage temporaire » sur l'accueil et dans Profil), perdu à la fermeture.
+- **Réinitialiser** : Profil › Stockage local › « Réinitialiser les données » efface tout et recharge les données d'exemple.
+
+## Scan
+
+- `app/scan.tsx` lit les codes avec **expo-camera** (EAN-13, EAN-8, UPC-A, UPC-E, Code 128, Code 39, QR) et vibre brièvement à chaque lecture (désactivable : Profil › Vibration au scan).
+- **Saisie manuelle** : bouton sur l'écran de scan pour taper un code-barres ou un SKU (utile sur simulateur ou sans caméra).
+- Le code est recherché par code-barres ou SKU. Code inconnu → « Créer l'article » ouvre le formulaire `article/new` prérempli ; au retour, l'article créé est retrouvé et le mouvement Entrée / Sortie peut être saisi.
+- Pendant un comptage cyclique, « Scanner » ouvre `/scan?countId=…` : le code lu renvoie directement sur l'article correspondant du comptage. La progression du comptage est enregistrée ; à la fin, les écarts peuvent être appliqués au stock ou ignorés.
 
 ## Stack
 
@@ -26,13 +40,15 @@ npx expo start
 app/
   _layout.tsx          Stack racine
   (tabs)/              Onglets : Accueil, Articles, Scanner, Tâches, Profil
-  scan.tsx             Scanner plein écran (mouvement Entrée / Sortie)
+  scan.tsx             Scanner plein écran (mouvement Entrée / Sortie, saisie manuelle)
+  article/new.tsx      Création d'un article
   article/[id].tsx     Détail d'un article
-  count/[id].tsx       Comptage cyclique
+  count/[id].tsx       Comptage cyclique (progression enregistrée)
 components/ui.tsx      Composants partagés (Btn, Stepper, Segmented…)
 constants/theme.ts     Couleurs et thème
-data/mock.ts           Données d'exemple
-data/store.ts          État en mémoire (articles, mouvements, ajustements)
+data/mock.ts           Données d'exemple (chargées au premier lancement)
+data/storage.ts        Accès MMKV (repli en mémoire si indisponible)
+data/store.ts          État de l'app persisté (articles, mouvements, comptages, préférences)
 assets/images/         Icône, icône adaptative, splash, favicon
 .eas/workflows/        Workflows EAS (CI/CD)
 ```
@@ -67,8 +83,7 @@ npx expo config --json > /dev/null   # vérification rapide
 
 ## À faire
 
-- Brancher l'API articles / tâches et l'envoi des quantités comptées.
-- Mode hors ligne et file de synchronisation.
+- Export / sauvegarde des données (aucune synchronisation serveur pour l'instant).
 - Remplacer les icônes provisoires de `assets/images/` par les visuels définitifs.
 - Le code-barres affiché sur la fiche détail est décoratif ; utilisez `react-native-svg` avec une bibliothèque de codes-barres pour un vrai rendu.
 - Sentry : `@sentry/react-native` et son plugin sont installés, mais le SDK n'est pas encore initialisé. Ajoutez `Sentry.init({ dsn: '…' })` dans `app/_layout.tsx`, un `metro.config.js` basé sur `getSentryExpoConfig`, et le secret `SENTRY_AUTH_TOKEN` dans EAS pour l'envoi des source maps.

@@ -1,12 +1,37 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { View, Text } from 'react-native';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Screen, H1, Card, Chip, Btn, Progress, Muted, Icon } from '../../components/ui';
 import { colors } from '../../constants/theme';
-import { cycleCount } from '../../data/mock';
+import { getCycleCount, fmtDateTime, type CycleCountInfo } from '../../data/store';
+
+function CountHeader({ count, done }: { count: CycleCountInfo; done?: boolean }) {
+  return (
+    <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
+      <View style={{ width: 44, height: 44, borderRadius: 10, backgroundColor: colors.tint, alignItems: 'center', justifyContent: 'center' }}>
+        <Icon name={done ? 'check-circle' : 'list'} color={colors.primary} />
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={{ fontSize: 12, fontWeight: '700', color: colors.primary }}>COMPTAGE CYCLIQUE</Text>
+        <Text style={{ fontSize: 16, fontWeight: '600' }}>{count.name}</Text>
+      </View>
+    </View>
+  );
+}
 
 export default function Tasks() {
   const [tab, setTab] = useState<'todo' | 'done'>('todo');
+  const [count, setCount] = useState(() => getCycleCount());
+
+  useFocusEffect(
+    useCallback(() => {
+      setCount(getCycleCount());
+    }, [])
+  );
+
+  const completed = count.completedAt !== undefined;
+  const open = () => router.push(`/count/${count.id}`);
+
   return (
     <Screen>
       <H1>Tâches</H1>
@@ -15,26 +40,29 @@ export default function Tasks() {
         <Chip label="Terminées" active={tab === 'done'} onPress={() => setTab('done')} />
       </View>
       {tab === 'todo' ? (
-        <>
+        !completed ? (
           <Card style={{ borderColor: colors.primary, borderWidth: 2, gap: 12 }}>
-            <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
-              <View style={{ width: 44, height: 44, borderRadius: 10, backgroundColor: colors.tint, alignItems: 'center', justifyContent: 'center' }}><Icon name="list" color={colors.primary} /></View>
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 12, fontWeight: '700', color: colors.primary }}>COMPTAGE CYCLIQUE</Text>
-                <Text style={{ fontSize: 16, fontWeight: '600' }}>{cycleCount.name}</Text>
-              </View>
-            </View>
-            <Muted>{cycleCount.folder} · {cycleCount.total} articles · Échéance : {cycleCount.due}</Muted>
+            <CountHeader count={count} />
+            <Muted>{count.folder} · {count.total} articles · Échéance : {count.due}</Muted>
             <View>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
                 <Text style={{ fontSize: 13 }}>Progression</Text>
-                <Text style={{ fontSize: 13, fontWeight: '700' }}>{cycleCount.done} / {cycleCount.total}</Text>
+                <Text style={{ fontSize: 13, fontWeight: '700' }}>{count.done} / {count.total}</Text>
               </View>
-              <Progress value={cycleCount.done / cycleCount.total} />
+              <Progress value={count.total > 0 ? count.done / count.total : 0} />
             </View>
-            <Btn title="Commencer le comptage" onPress={() => router.push(`/count/${cycleCount.id}`)} />
+            <Btn title={count.done > 0 ? 'Reprendre le comptage' : 'Commencer le comptage'} onPress={open} />
           </Card>
-        </>
+        ) : (
+          <Card><Muted>Aucune tâche à faire.</Muted></Card>
+        )
+      ) : completed && count.completedAt !== undefined ? (
+        <Card style={{ gap: 12 }}>
+          <CountHeader count={count} done />
+          <Muted>{count.folder} · {count.done} / {count.total} articles traités</Muted>
+          <Muted>Terminé le {fmtDateTime(count.completedAt)}</Muted>
+          <Btn title="Voir le comptage" variant="outline" onPress={open} />
+        </Card>
       ) : (
         <Card><Muted>Aucune tâche terminée.</Muted></Card>
       )}

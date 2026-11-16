@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { View, Text, Pressable, Switch, Alert, ScrollView, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
+import { useFocusEffect } from 'expo-router';
 import { colors } from '../../constants/theme';
-import { fmtTime } from '../../data/store';
+import { fmtTime, getPrefs, setPrefs, getStorageInfo, resetAllData } from '../../data/store';
 
 // ── Mock user data (replace with real auth context later) ──────────────────
 const USER = {
@@ -86,14 +87,27 @@ function SettingCard({ children }: { children: React.ReactNode }) {
 // ── Screen ─────────────────────────────────────────────────────────────────
 
 export default function Profile() {
-  const [vibration, setVibration] = useState(true);
-  const [offlineMode, setOfflineMode] = useState(false);
-  const [lastSync] = useState(Date.now() - 3 * 60_000); // 3 min ago
+  const [vibration, setVibration] = useState(() => getPrefs().vibration);
+  const [info, setInfo] = useState(() => getStorageInfo());
+
+  // Rafraîchir les compteurs à chaque retour sur l'onglet
+  useFocusEffect(
+    useCallback(() => {
+      setInfo(getStorageInfo());
+      setVibration(getPrefs().vibration);
+    }, [])
+  );
+
+  const handleVibration = (v: boolean) => {
+    setVibration(v);
+    setPrefs({ vibration: v });
+    setInfo(getStorageInfo());
+  };
 
   const handleLogout = () => {
     Alert.alert(
       'Se déconnecter',
-      'Toutes les modifications non synchronisées seront perdues.',
+      'Vos données restent enregistrées sur cet appareil.',
       [
         { text: 'Annuler', style: 'cancel' },
         { text: 'Se déconnecter', style: 'destructive', onPress: () => {} },
@@ -101,8 +115,24 @@ export default function Profile() {
     );
   };
 
-  const handleSync = () => {
-    Alert.alert('Synchronisation', 'Données à jour — aucune modification en attente.');
+  const handleReset = () => {
+    Alert.alert(
+      'Réinitialiser les données',
+      'Tous les articles, mouvements et comptages enregistrés sur cet appareil seront supprimés et remplacés par les données d\'exemple. Cette action est irréversible.',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Réinitialiser',
+          style: 'destructive',
+          onPress: () => {
+            resetAllData();
+            setInfo(getStorageInfo());
+            setVibration(getPrefs().vibration);
+            Alert.alert('Données réinitialisées', 'Les données d\'exemple ont été rechargées.');
+          },
+        },
+      ]
+    );
   };
 
   return (
@@ -139,23 +169,36 @@ export default function Profile() {
           <SettingRow icon="map-pin" label="Site actuel" value={USER.site} first onPress={() => {}} />
         </SettingCard>
 
-        {/* ── SYNCHRONISATION ─────────────────────────────────────────── */}
-        <SectionLabel label="SYNCHRONISATION" />
+        {/* ── STOCKAGE LOCAL ──────────────────────────────────────────── */}
+        <SectionLabel label="STOCKAGE LOCAL" />
         <View style={[styles.card, { gap: 12 }]}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            <View style={styles.onlineDot} />
-            <Text style={{ fontSize: 14, fontWeight: '600', color: colors.text }}>En ligne</Text>
+            {info.persistent
+              ? <View style={styles.statusDot} />
+              : <Feather name="alert-triangle" size={16} color={colors.warnText} />}
+            <Text style={{ fontSize: 14, fontWeight: '600', color: info.persistent ? colors.text : colors.warnText }}>
+              {info.persistent ? 'Hors ligne · enregistré sur l\'appareil' : 'Stockage temporaire'}
+            </Text>
           </View>
+          {!info.persistent && (
+            <Text style={styles.warnBox}>
+              Les données seront perdues à la fermeture de l'application. L'enregistrement local
+              nécessite un build de développement (Expo Go ne peut pas conserver les données).
+            </Text>
+          )}
           <Text style={{ fontSize: 13, color: colors.muted }}>
-            Dernière synchronisation : {fmtTime(lastSync)} · 0 modification en attente
+            {info.itemCount} article(s) · {info.movementCount} mouvement(s)
+            {info.lastSavedAt !== undefined ? ` · Dernier enregistrement : ${fmtTime(info.lastSavedAt)}` : ''}
           </Text>
           <Pressable
             accessibilityRole="button"
-            onPress={handleSync}
-            style={styles.syncBtn}
+            accessibilityLabel="Réinitialiser les données"
+            accessibilityHint="Supprime toutes les données de l'appareil et recharge les données d'exemple"
+            onPress={handleReset}
+            style={styles.resetBtn}
           >
-            <Feather name="refresh-cw" size={18} color={colors.primary} />
-            <Text style={styles.syncBtnText}>Synchroniser maintenant</Text>
+            <Feather name="trash-2" size={18} color="#8A2A1B" />
+            <Text style={styles.resetBtnText}>Réinitialiser les données</Text>
           </Pressable>
         </View>
 
@@ -163,8 +206,7 @@ export default function Profile() {
         <SectionLabel label="PRÉFÉRENCES" />
         <SettingCard>
           <SettingRow icon="globe" label="Langue" value="Français" first onPress={() => {}} />
-          <ToggleRow icon="activity" label="Vibration au scan" value={vibration} onValueChange={setVibration} />
-          <ToggleRow icon="refresh-cw" label="Mode hors ligne" value={offlineMode} onValueChange={setOfflineMode} />
+          <ToggleRow icon="activity" label="Vibration au scan" value={vibration} onValueChange={handleVibration} />
         </SettingCard>
 
         {/* ── AIDE ────────────────────────────────────────────────────── */}
@@ -302,28 +344,36 @@ const styles = StyleSheet.create({
     color: colors.muted,
   },
 
-  // Sync card
-  onlineDot: {
+  // Local storage card
+  statusDot: {
     width: 8,
     height: 8,
     borderRadius: 4,
     backgroundColor: colors.primary,
   },
-  syncBtn: {
+  warnBox: {
+    fontSize: 13,
+    color: colors.warnText,
+    backgroundColor: colors.warnBg,
+    borderRadius: 10,
+    padding: 12,
+    overflow: 'hidden',
+  },
+  resetBtn: {
     minHeight: 48,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: colors.primary,
+    borderColor: '#8A2A1B',
     backgroundColor: '#fff',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
   },
-  syncBtnText: {
+  resetBtnText: {
     fontSize: 15,
     fontWeight: '600',
-    color: colors.primary,
+    color: '#8A2A1B',
   },
 
   // Logout
