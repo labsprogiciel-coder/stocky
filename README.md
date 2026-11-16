@@ -74,7 +74,7 @@ Un numéro de série ou un IMEI ne peut pas être égal au code-barres ou au SKU
 Ordre de résolution d'un code : **numéro de série / IMEI d'un appareil → code-barres / SKU d'un article → code inconnu**.
 
 - **Appareil scanné** : fiche rapide (article, numéro de série, IMEI, statut, attributaire). Appareil « En stock » : « Attribuer » (demande le nom), « Envoyer en réparation », « Retirer ». Autre statut : « Remettre en stock ». Après chaque action : « Scanner un autre » ou « Fermer ».
-- **Article suivi par numéro de série scanné** (son code-barres ou SKU) : *Entrée* → « Ajouter des appareils » : chaque numéro de série scanné (ou saisi) est ajouté « En stock » et le scanner reste prêt pour le suivant ; « Compléter (IMEI, statut…) » ouvre l'appareil ajouté. *Sortie* → se fait en scannant le numéro de série de l'appareil lui-même (puis Attribuer / Réparation / Retirer).
+- **Article suivi par numéro de série scanné** (son code-barres ou SKU) : *Entrée* → « Ajouter des appareils » : chaque code lu par la caméra est proposé (« Ajouter » / « Ignorer », un code ignoré n'est plus proposé pendant l'ajout), un numéro saisi à la main est ajouté directement ; l'appareil est ajouté « En stock » et le scanner reste prêt pour le suivant ; « Compléter (IMEI, statut…) » ouvre l'appareil ajouté. *Sortie* → se fait en scannant le numéro de série de l'appareil lui-même (puis Attribuer / Réparation / Retirer).
 - **Article suivi en quantité** : panneau Entrée / Sortie inchangé.
 - **Code inconnu** : « Créer l'article » ou « Ajouter comme appareil » (choix d'un article suivi par numéro de série, puis formulaire d'appareil prérempli avec le code comme numéro de série).
 

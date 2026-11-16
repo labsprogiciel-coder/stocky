@@ -110,6 +110,10 @@ export default function Scan() {
   // Comptage « Scanner les appareils » : appareils trouvés pendant ce scan.
   const [foundCount, setFoundCount] = useState(0);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
+  // Boucle d'ajout : code lu par la caméra, en attente de confirmation
+  // (une étiquette porte souvent d'autres codes : référence, modèle…).
+  const [pendingSerial, setPendingSerial] = useState<string | null>(null);
+  const pendingRef = useRef<string | null>(null);
   // Panneau appareil : saisie de l'attributaire.
   const [assigning, setAssigning] = useState(false);
   const [assignee, setAssignee] = useState('');
@@ -170,38 +174,8 @@ export default function Scan() {
     }, LOOP_UNLOCK_MS);
   };
 
-  /** Boucle « Ajouter des appareils » : le code lu devient un numéro de série de `target`. */
-  const addSerial = (target: Item, data: string, source: 'camera' | 'manual', symbology?: string) => {
-    // Un IMEI (15 chiffres, clé de Luhn valide) lu sur l'étiquette n'est pas
-    // un numéro de série. La saisie manuelle reste possible.
-    if (source === 'camera' && isValidImei(imeiDigits(data)) && !findUnitByCode(data)) {
-      setFeedback({
-        kind: 'info',
-        text: `Code ${data} ignoré : il ressemble à un IMEI. Scannez le numéro de série (S/N) ; l'IMEI s'ajoute depuis « Compléter ».`,
-      });
-      return;
-    }
-    const asItem = findItemByCode(data);
-    if (asItem) {
-      // Le code-barres de l'article lui-même, encore dans le cadre : ignoré.
-      if (asItem.id === target.id && source === 'camera') return;
-      setFeedback({
-        kind: 'error',
-        text: asItem.id === target.id
-          ? "C'est le code de l'article lui-même : saisissez le numéro de série de l'appareil."
-          : `Ce code est celui de l'article « ${asItem.name} », pas un numéro de série.`,
-      });
-      return;
-    }
-    // Code-barres produit (EAN/UPC) d'un carton, lu en même temps que le S/N :
-    // ce n'est pas un numéro de série. La saisie manuelle reste possible.
-    if (source === 'camera' && symbology !== undefined && PRODUCT_SYMBOLOGY.test(symbology)) {
-      setFeedback({
-        kind: 'info',
-        text: `Code ${data} ignoré : c'est un code-barres produit (EAN/UPC). Scannez le numéro de série (S/N) ou saisissez-le manuellement.`,
-      });
-      return;
-    }
+  /** Enregistre `data` comme numéro de série d'un nouvel appareil de `target`. */
+  const commitSerial = (target: Item, data: string) => {
     const res = addUnit(target.id, { serial: data });
     if (res.error !== undefined) {
       setFeedback({ kind: 'error', text: res.error });
@@ -211,6 +185,83 @@ export default function Scan() {
     setFeedback({ kind: 'ok', text: `Ajouté : ${res.unit.serial}`, unitId: res.unit.id });
     setRefresh((n) => n + 1);
   };
+
+  /**
+   * Boucle « Ajouter des appareils » : le code lu devient un numéro de série de `target`.
+   * Lu par la caméra, il est d'abord proposé (retourne `true`, scanner verrouillé
+   * jusqu'à « Ajouter » ou « Ignorer ») ; saisi à la main, il est ajouté directement.
+   */
+  const addSerial = (target: Item, data: string, source: 'camera' | 'manual', symbology?: string): boolean => {
+    // Un IMEI (15 chiffres, clé de Luhn valide) lu sur l'étiquette n'est pas
+    // un numéro de série. La saisie manuelle reste possible.
+    if (source === 'camera' && isValidImei(imeiDigits(data)) && !findUnitByCode(data)) {
+      setFeedback({
+        kind: 'info',
+        text: `Code ${data} ignoré : il ressemble à un IMEI. Scannez le numéro de série (S/N) ; l'IMEI s'ajoute depuis « Compléter ».`,
+      });
+      return false;
+    }
+    const asItem = findItemByCode(data);
+    if (asItem) {
+      // Le code-barres de l'article lui-même, encore dans le cadre : ignoré.
+      if (asItem.id === target.id && source === 'camera') return false;
+      setFeedback({
+        kind: 'error',
+        text: asItem.id === target.id
+          ? "C'est le code de l'article lui-même : saisissez le numéro de série de l'appareil."
+          : `Ce code est celui de l'article « ${asItem.name} », pas un numéro de série.`,
+      });
+      return false;
+    }
+    // Code-barres produit (EAN/UPC) d'un carton, lu en même temps que le S/N :
+    // ce n'est pas un numéro de série. La saisie manuelle reste possible.
+    if (source === 'camera' && symbology !== undefined && PRODUCT_SYMBOLOGY.test(symbology)) {
+      setFeedback({
+        kind: 'info',
+        text: `Code ${data} ignoré : c'est un code-barres produit (EAN/UPC). Scannez le numéro de série (S/N) ou saisissez-le manuellement.`,
+      });
+      return false;
+    }
+    if (source === 'camera') {
+      const unit = findUnitByCode(data);
+      if (unit) {
+        setFeedback({ kind: 'error', text: `Appareil déjà enregistré : ${unit.serial}${getItem(unit.itemId) ? ` · ${getItem(unit.itemId)!.name}` : ''}` });
+        return false;
+      }
+      setFeedback(null);
+      pendingRef.current = data;
+      setPendingSerial(data);
+      return true;
+    }
+    commitSerial(target, data);
+    return false;
+  };
+
+  // Copie synchrone de pendingSerial : un double appui arrive avant le rendu.
+  const takePending = () => {
+    const v = pendingRef.current;
+    pendingRef.current = null;
+    setPendingSerial(null);
+    return v;
+  };
+
+  const confirmPending = () => {
+    if (!addTarget) return;
+    const serial = takePending();
+    if (!serial) return;
+    commitSerial(addTarget, serial);
+    scheduleUnlock();
+  };
+
+  const ignorePending = () => {
+    const serial = takePending();
+    if (!serial) return;
+    // Déjà dans loopSeenRef : ce code ne sera plus proposé pendant la boucle.
+    setFeedback({ kind: 'info', text: `Ignoré : ${serial}` });
+    scheduleUnlock();
+  };
+
+
 
   /** Comptage « Scanner les appareils » : marque l'appareil trouvé, sans quitter le scanner. */
   const countSerial = (countId: string, data: string) => {
@@ -295,9 +346,15 @@ export default function Scan() {
     }
 
     if (addLoop) {
-      addSerial(addTarget, data, source, symbology);
+      const pending = addSerial(addTarget, data, source, symbology);
       if (source === 'manual') setManualText('');
-      scheduleUnlock();
+      if (pending) {
+        // Reste verrouillé jusqu'à la réponse de l'utilisateur.
+        if (unlockTimerRef.current) clearTimeout(unlockTimerRef.current);
+        unlockTimerRef.current = null;
+      } else {
+        scheduleUnlock();
+      }
       return;
     }
 
@@ -344,6 +401,8 @@ export default function Scan() {
     if (unlockTimerRef.current) clearTimeout(unlockTimerRef.current);
     unlockTimerRef.current = null;
     loopSeenRef.current = new Set();
+    pendingRef.current = null;
+    setPendingSerial(null);
     setAddTargetId(null);
     setFeedback(null);
     setManualOpen(false);
@@ -546,9 +605,18 @@ export default function Scan() {
             </View>
           </View>
           <Text style={{ fontSize: 13, color: colors.muted }}>
-            Scannez le numéro de série de chaque appareil reçu : il est ajouté « En stock » et le scanner reste prêt pour le suivant.
+            Scannez le numéro de série de chaque appareil reçu, puis confirmez : il est ajouté « En stock » et le scanner reste prêt pour le suivant.
           </Text>
-          {feedback && (
+          {pendingSerial ? (
+            <View accessibilityLiveRegion="polite" style={{ backgroundColor: colors.tint, borderRadius: 10, padding: 12, gap: 10 }}>
+              <Text style={{ fontSize: 13, color: colors.muted }}>Code lu — est-ce le numéro de série de l'appareil ?</Text>
+              <Text selectable style={{ fontSize: 17, fontWeight: '600', color: colors.text }}>{pendingSerial}</Text>
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <Btn title="Ignorer" variant="outline" accessibilityHint="Ce code ne sera plus proposé pendant cet ajout" onPress={ignorePending} style={{ flex: 1 }} />
+                <Btn title="Ajouter" accessibilityHint={`Ajoute un appareil à ${addTarget.name}`} onPress={confirmPending} style={{ flex: 1 }} />
+              </View>
+            </View>
+          ) : feedback && (
             <FeedbackBanner
               feedback={feedback}
               action={feedback.unitId ? { label: 'Compléter (IMEI, statut…)', onPress: () => router.push(`/unit/${feedback.unitId}`) } : undefined}
@@ -557,7 +625,7 @@ export default function Scan() {
           <Text style={{ fontSize: 13, color: colors.text }}>
             {fmtCount(addedCount, 'appareil ajouté', 'appareils ajoutés')} · Stock : {addTarget.qty} en stock
           </Text>
-          <Btn title="Saisir un numéro de série" variant="outline" onPress={() => setManualOpen(true)} />
+          {!pendingSerial && <Btn title="Saisir un numéro de série" variant="outline" onPress={() => setManualOpen(true)} />}
           <Btn title="Terminer" onPress={finishLoop} />
         </SafeAreaView>
       )}
