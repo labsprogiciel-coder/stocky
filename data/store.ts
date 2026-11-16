@@ -3,13 +3,15 @@
  *
  * L'API reste synchrone : l'état est chargé une seule fois depuis le stockage
  * (MMKV) au premier accès, puis chaque mutation est écrite immédiatement.
- * Au premier lancement, ou si les données stockées sont absentes, corrompues
- * ou invalides, on repart des données d'exemple de `data/mock.ts`.
+ * Au premier lancement, ou si les articles stockés sont absents, corrompus ou
+ * tous invalides, l'application démarre avec un inventaire vide (préférences
+ * conservées). Les données d'exemple de `data/mock.ts` ne sont chargées qu'à
+ * la demande, via `loadSampleData()`.
  */
-import { Item, cycleCount, items as seedItems, recent as seedRecent } from './mock';
+import { items as sampleItems, recent as sampleRecent } from './mock';
 import { KEYS, clearAll, isPersistent, readJSON, writeJSON } from './storage';
 
-export type { Item };
+export type Item = { id: string; name: string; sku: string; barcode?: string; folder: string; qty: number; min: number; price: number };
 
 export type MovementMode = 'Entrée' | 'Sortie';
 
@@ -46,6 +48,8 @@ export type CycleCountInfo = {
   blind: boolean;
   total: number;
   done: number;
+  /** Avancement entre 0 et 1 (0 si le comptage ne contient aucun article). */
+  progress: number;
   completedAt?: number;
 };
 
@@ -78,6 +82,19 @@ export type CompleteCountResult =
 
 const MAX_MOVEMENTS = 500;
 const DEFAULT_PREFS: Prefs = { vibration: true };
+
+/**
+ * Comptage cyclique unique : il porte sur tout l'inventaire (tous les
+ * articles, dans l'ordre de la liste). La progression est calculée à partir
+ * de la session enregistrée sur l'appareil.
+ */
+const CYCLE_COUNT = {
+  id: 'c1',
+  name: "Comptage de l'inventaire",
+  folder: 'Tous les dossiers',
+  due: "Aujourd'hui",
+  blind: true,
+} as const;
 
 // ── Validation des données stockées ────────────────────────────────────────
 
@@ -179,10 +196,16 @@ function uid(prefix: string): string {
   return `${prefix}${Date.now().toString(36)}-${_seq.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
-function seedState(): State {
-  const items = seedItems.map((i) => ({ ...i }));
+/** État vierge : aucun article, aucun mouvement, aucun comptage. */
+function blankState(prefs: Prefs = DEFAULT_PREFS): State {
+  return { items: [], movements: [], sessions: {}, prefs: { ...prefs } };
+}
+
+/** Jeu de données d'exemple (`data/mock.ts`), chargé uniquement à la demande. */
+function sampleState(prefs: Prefs): State {
+  const items = sampleItems.map((i) => ({ ...i }));
   const now = Date.now();
-  const movements: Movement[] = seedRecent.map((r, idx) => ({
+  const movements: Movement[] = sampleRecent.map((r, idx) => ({
     id: `seed-${r.id}`,
     itemId: r.itemId,
     sku: items.find((i) => i.id === r.itemId)?.sku ?? '',
@@ -190,7 +213,7 @@ function seedState(): State {
     qty: idx === 0 ? 2 : 10,
     ts: now - (idx + 1) * 60_000,
   }));
-  return { items, movements, sessions: {}, prefs: { ...DEFAULT_PREFS } };
+  return { items, movements, sessions: {}, prefs: { ...prefs } };
 }
 
 function loadPrefs(): Prefs {
@@ -204,14 +227,16 @@ function loadState(): State {
   const prefs = loadPrefs();
   const rawItems = readJSON<unknown>(KEYS.items, null);
   const items = validList(rawItems, isItem);
-  // Aucune API ne supprime d'article : une liste vide (ou sans entrée valide)
-  // signifie des données absentes, corrompues ou invalides.
-  if (items.length === 0) {
-    // On repart des données d'exemple, en conservant les préférences.
-    const seeded = { ...seedState(), prefs };
-    _state = seeded;
+  // Absents (premier lancement), illisibles, ou liste non vide sans aucune
+  // entrée valide : on démarre avec un inventaire vide, en conservant les
+  // préférences, et on l'enregistre pour qu'un relancement reste vide.
+  // Une liste vide `[]` est valide (inventaire vide) et suit le chemin normal.
+  const unusable = !Array.isArray(rawItems) || (rawItems.length > 0 && items.length === 0);
+  if (unusable) {
+    const blank = blankState(prefs);
+    _state = blank;
     persist('items', 'movements', 'sessions');
-    return seeded;
+    return blank;
   }
 
   const itemIds = new Set(items.map((i) => i.id));
@@ -417,10 +442,19 @@ export function adjustStock(itemId: string, newQty: number): string | null {
 
 // ── Comptage cyclique ──────────────────────────────────────────────────────
 
-/** Articles inclus dans le comptage (source unique pour l'écran et la progression). */
-export function getCountItems(id: string = cycleCount.id): Item[] {
-  if (id !== cycleCount.id) return [];
-  return state().items.slice(0, cycleCount.maxItems);
+/**
+ * Articles inclus dans le comptage : tout l'inventaire, dans l'ordre de la
+ * liste (source unique pour l'écran, la progression et l'export). Un comptage
+ * terminé reste limité aux articles figés dans `session.expected` : les
+ * articles créés après la clôture n'y sont pas ajoutés.
+ */
+export function getCountItems(id: string = CYCLE_COUNT.id): Item[] {
+  if (id !== CYCLE_COUNT.id) return [];
+  const s = state();
+  const session = s.sessions[id];
+  const expected = session?.completedAt !== undefined ? session.expected : undefined;
+  if (expected) return s.items.filter((i) => expected[i.id] !== undefined);
+  return s.items.slice();
 }
 
 function freshSession(id: string): CountSession {
@@ -429,7 +463,7 @@ function freshSession(id: string): CountSession {
 
 /** Session enregistrée, ou une session vierge (non enregistrée) si aucune. */
 export function getCountSession(id: string): CountSession | undefined {
-  if (id !== cycleCount.id) return undefined;
+  if (id !== CYCLE_COUNT.id) return undefined;
   const s = state().sessions[id];
   if (!s) return freshSession(id);
   return { ...s, entries: { ...s.entries }, ...(s.expected ? { expected: { ...s.expected } } : {}) };
@@ -437,24 +471,28 @@ export function getCountSession(id: string): CountSession | undefined {
 
 /** Vrai si une session est enregistrée (comptage démarré). */
 export function hasCountSession(id: string): boolean {
-  return id === cycleCount.id && state().sessions[id] !== undefined;
+  return id === CYCLE_COUNT.id && state().sessions[id] !== undefined;
 }
 
 export function getCycleCount(): CycleCountInfo {
-  const { id, name, folder, due, blind } = cycleCount;
+  const { id, name, folder, due, blind } = CYCLE_COUNT;
   const list = getCountItems(id);
   const session = state().sessions[id];
+  // Seules les entrées des articles existants comptent (une session peut
+  // référencer des articles qui n'existent plus).
   const done = session ? list.filter((i) => session.entries[i.id] !== undefined).length : 0;
+  const total = list.length;
   return {
     id, name, folder, due, blind,
-    total: list.length,
+    total,
     done,
+    progress: total > 0 ? Math.min(1, done / total) : 0,
     ...(session?.completedAt !== undefined ? { completedAt: session.completedAt } : {}),
   };
 }
 
 function writableSession(id: string): CountSession | string {
-  if (id !== cycleCount.id) return 'Comptage introuvable.';
+  if (id !== CYCLE_COUNT.id) return 'Comptage introuvable.';
   const s = state();
   const session = s.sessions[id] ?? freshSession(id);
   if (session.completedAt !== undefined) return 'Ce comptage est terminé.';
@@ -464,7 +502,10 @@ function writableSession(id: string): CountSession | string {
 
 /** Enregistre le résultat d'un article. Renvoie un message d'erreur ou null. */
 export function saveCountEntry(id: string, itemId: string, entry: CountEntry): string | null {
-  if (!getCountItems(id).some((i) => i.id === itemId)) return 'Article hors comptage.';
+  if (id !== CYCLE_COUNT.id) return 'Comptage introuvable.';
+  const list = getCountItems(id);
+  if (list.length === 0) return 'Aucun article à compter. Ajoutez des articles à l\'inventaire.';
+  if (!list.some((i) => i.id === itemId)) return 'Article hors comptage.';
   if (!Number.isInteger(entry.qty) || entry.qty < 0) return 'La quantité ne peut pas être négative.';
   if (!isCountStatus(entry.status)) return 'Statut invalide.';
   const session = writableSession(id);
@@ -490,6 +531,10 @@ export function setCountIndex(id: string, idx: number): void {
  * avec un mouvement Entrée/Sortie.
  */
 export function completeCount(id: string, applyAdjustments: boolean): CompleteCountResult {
+  if (id !== CYCLE_COUNT.id) return { ok: false, error: 'Comptage introuvable.' };
+  if (getCountItems(id).length === 0) {
+    return { ok: false, error: 'Aucun article à compter. Ajoutez des articles avant de terminer le comptage.' };
+  }
   const session = writableSession(id);
   if (typeof session === 'string') return { ok: false, error: session };
 
@@ -516,7 +561,7 @@ export function completeCount(id: string, applyAdjustments: boolean): CompleteCo
 
 /** Démarre une nouvelle session (la précédente est effacée). */
 export function restartCount(id: string): void {
-  if (id !== cycleCount.id) return;
+  if (id !== CYCLE_COUNT.id) return;
   const s = state();
   s.sessions = { ...s.sessions, [id]: freshSession(id) };
   _pendingCountScans.delete(id);
@@ -548,12 +593,27 @@ export function setPrefs(partial: Partial<Prefs>): void {
 
 // ── Stockage ───────────────────────────────────────────────────────────────
 
-/** Efface toutes les données de l'appareil et recharge les données d'exemple. */
+/**
+ * Efface toutes les données de l'appareil (préférences comprises) :
+ * l'application repart vide.
+ */
 export function resetAllData(): void {
   clearAll();
   _pendingCountScans.clear();
-  _state = seedState();
+  _state = blankState();
   persistAll();
+}
+
+/**
+ * Remplace les articles, mouvements et comptages actuels par les données
+ * d'exemple de `data/mock.ts` (préférences conservées).
+ * Utilisé uniquement depuis Profil › Stockage local.
+ */
+export function loadSampleData(): void {
+  const prev = state();
+  _pendingCountScans.clear();
+  _state = { ...sampleState(prev.prefs), ...(prev.lastSavedAt !== undefined ? { lastSavedAt: prev.lastSavedAt } : {}) };
+  persist('items', 'movements', 'sessions');
 }
 
 export function getStorageInfo(): StorageInfo {
@@ -567,6 +627,11 @@ export function getStorageInfo(): StorageInfo {
 }
 
 // ── Formatage ──────────────────────────────────────────────────────────────
+
+/** Nombre suivi du nom accordé à la française : 0 et 1 au singulier (« 0 article »). */
+export function fmtCount(n: number, singular: string, plural: string): string {
+  return `${n} ${Math.abs(n) <= 1 ? singular : plural}`;
+}
 
 /** Heure d'un horodatage, au format HH:MM. */
 export function fmtTime(ts: number): string {

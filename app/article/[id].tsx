@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react';
 import { View, Text, Alert } from 'react-native';
-import { useLocalSearchParams, Stack, useFocusEffect } from 'expo-router';
-import { Screen, Card, Btn, Stepper, Muted, Icon, Alert as InlineAlert } from '../../components/ui';
+import { router, useLocalSearchParams, Stack, useFocusEffect } from 'expo-router';
+import { Screen, Card, Btn, Stepper, Muted, Icon, EmptyState, Alert as InlineAlert } from '../../components/ui';
 import { colors } from '../../constants/theme';
 import { getItem, adjustStock } from '../../data/store';
 
@@ -30,15 +30,26 @@ export default function ArticleDetail() {
         setQty(fresh.qty);
         setError(null);
         setSaved(false);
+      } else {
+        // Article disparu entre-temps (ex. données réinitialisées).
+        setItem(null);
       }
     }, [id])
   );
 
   if (!item) {
     return (
-      <Screen hasHeader>
-        <Muted>Article introuvable.</Muted>
-      </Screen>
+      <>
+        <Stack.Screen options={{ title: 'Article introuvable' }} />
+        <Screen hasHeader>
+          <EmptyState
+            icon="search"
+            title="Article introuvable"
+            message="Cet article n'existe pas ou n'est plus enregistré sur cet appareil."
+            primaryAction={{ label: 'Retour aux articles', onPress: () => router.dismissTo('/articles'), accessibilityHint: 'Affiche la liste des articles' }}
+          />
+        </Screen>
+      </>
     );
   }
 

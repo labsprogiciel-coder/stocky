@@ -1,9 +1,9 @@
 import { useCallback, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
-import { Screen, H1, H2, Card, Btn, Progress, Row, Thumb, Muted, Icon } from '../../components/ui';
+import { Screen, H1, H2, Card, Btn, Progress, Row, Thumb, Muted, Icon, EmptyState } from '../../components/ui';
 import { colors } from '../../constants/theme';
-import { getItems, getMovements, getCycleCount, fmtTime, fmtDateTime } from '../../data/store';
+import { getItems, getMovements, getCycleCount, fmtCount, fmtTime, fmtDateTime } from '../../data/store';
 import { isPersistent } from '../../data/storage';
 
 const actions = [
@@ -28,8 +28,14 @@ export default function Home() {
     }, [])
   );
 
+  const hasItems = items.length > 0;
   const lowCount = items.filter((i) => i.qty <= i.min).length;
-  const recentMovements = movements.slice(0, 5);
+  const itemsById = new Map(items.map((i) => [i.id, i]));
+  const recentMovements = movements.filter((m) => itemsById.has(m.itemId)).slice(0, 5);
+  const lowLabel = lowCount === 0
+    ? 'Aucun article sous le seuil minimum'
+    : `${fmtCount(lowCount, 'article', 'articles')} sous le seuil minimum`;
+  const lowColor = lowCount > 0 ? colors.warnText : colors.primary;
   const countLabel = count.completedAt !== undefined
     ? 'Voir le comptage'
     : count.done > 0 ? 'Reprendre le comptage' : 'Commencer le comptage';
@@ -51,58 +57,86 @@ export default function Home() {
         </View>
       </View>
 
-      <Card style={{ borderColor: colors.primary, borderWidth: 2, gap: 12 }}>
-        <Text style={{ fontSize: 12, fontWeight: '700', color: colors.primary }}>COMPTAGE CYCLIQUE · AUJOURD'HUI</Text>
-        <Text style={{ fontSize: 16, fontWeight: '600' }}>{count.name}</Text>
-        <Muted>
-          {count.folder} · {count.total} articles
-          {count.completedAt !== undefined ? ` · Terminé le ${fmtDateTime(count.completedAt)}` : ''}
-        </Muted>
-        <View>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
-            <Text style={{ fontSize: 13 }}>Progression</Text>
-            <Text style={{ fontSize: 13, fontWeight: '700' }}>{count.done} / {count.total}</Text>
-          </View>
-          <Progress value={count.total > 0 ? count.done / count.total : 0} />
-        </View>
-        <Btn title={countLabel} onPress={() => router.push(`/count/${count.id}`)} />
-      </Card>
-
-      <View style={{ flexDirection: 'row', gap: 8 }}>
-        {actions.map((a) => (
-          <Pressable key={a.label} accessibilityRole="button" onPress={a.go} style={{ flex: 1, minHeight: 88, borderRadius: 14, alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: 'primary' in a ? colors.primary : '#fff', borderWidth: 'primary' in a ? 0 : 1, borderColor: colors.field }}>
-            <Icon name={a.icon} size={26} color={'primary' in a ? '#fff' : colors.text} />
-            <Text style={{ fontSize: 12, fontWeight: '600', color: 'primary' in a ? '#fff' : colors.text }}>{a.label}</Text>
-          </Pressable>
-        ))}
-      </View>
-
-      <Pressable onPress={() => router.push('/articles')} style={{ minHeight: 52, borderRadius: 12, backgroundColor: colors.warnBg, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14 }}>
-        <Icon name="alert-triangle" size={20} color={colors.warnText} />
-        <Text style={{ flex: 1, fontSize: 14, fontWeight: '600', color: colors.warnText }}>{lowCount} articles sous le seuil minimum</Text>
-        <Icon name="chevron-right" size={18} color={colors.warnText} />
-      </Pressable>
-
-      <H2>Activité récente</H2>
-      <Card style={{ padding: 0, overflow: 'hidden' }}>
-        {recentMovements.length === 0 && (
-          <Muted style={{ padding: 16 }}>Aucune activité récente.</Muted>
-        )}
-        {recentMovements.map((m) => {
-          const it = items.find((i) => i.id === m.itemId);
-          if (!it) return null;
-          return (
-            <Row key={m.id} onPress={() => router.push(`/article/${it.id}`)}>
-              <Thumb />
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 15, fontWeight: '600' }}>{it.name}</Text>
-                <Muted>{m.mode} · {m.mode === 'Entrée' ? '+' : '−'}{m.qty} · {fmtTime(m.ts)}</Muted>
+      {!hasItems ? (
+        <>
+          <EmptyState
+            icon="package"
+            title="Aucun article"
+            message="Votre inventaire est vide. Ajoutez votre premier article ou scannez un code-barres pour commencer à suivre votre stock."
+            primaryAction={{ label: 'Ajouter un article', onPress: () => router.push('/article/new'), accessibilityHint: 'Ouvre le formulaire de création d\'article' }}
+            secondaryAction={{ label: 'Scanner un code', onPress: () => router.push('/scan'), accessibilityHint: 'Ouvre le scanner de codes-barres' }}
+          />
+          <Muted style={{ textAlign: 'center' }}>
+            Pour découvrir l'application, chargez les données d'exemple depuis Profil › Stockage local.
+          </Muted>
+        </>
+      ) : (
+        <>
+          <Card style={{ borderColor: colors.primary, borderWidth: 2, gap: 12 }}>
+            <Text style={{ fontSize: 12, fontWeight: '700', color: colors.primary }}>COMPTAGE CYCLIQUE · AUJOURD'HUI</Text>
+            <Text style={{ fontSize: 16, fontWeight: '600' }}>{count.name}</Text>
+            <Muted>
+              {count.folder} · {fmtCount(count.total, 'article', 'articles')}
+              {count.completedAt !== undefined ? ` · Terminé le ${fmtDateTime(count.completedAt)}` : ''}
+            </Muted>
+            <View>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+                <Text style={{ fontSize: 13 }}>Progression</Text>
+                <Text style={{ fontSize: 13, fontWeight: '700' }}>{count.done} / {count.total}</Text>
               </View>
-              <Icon name="chevron-right" size={18} color={colors.muted} />
-            </Row>
-          );
-        })}
-      </Card>
+              <Progress value={count.progress} />
+            </View>
+            <Btn title={countLabel} onPress={() => router.push(`/count/${count.id}`)} />
+          </Card>
+
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            {actions.map((a) => (
+              <Pressable key={a.label} accessibilityRole="button" accessibilityLabel={a.label} onPress={a.go} style={{ flex: 1, minHeight: 88, borderRadius: 14, alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: 'primary' in a ? colors.primary : '#fff', borderWidth: 'primary' in a ? 0 : 1, borderColor: colors.field }}>
+                <Icon name={a.icon} size={26} color={'primary' in a ? '#fff' : colors.text} />
+                <Text style={{ fontSize: 12, fontWeight: '600', color: 'primary' in a ? '#fff' : colors.text }}>{a.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={lowLabel}
+            onPress={() => router.push('/articles')}
+            style={{ minHeight: 52, borderRadius: 12, backgroundColor: lowCount > 0 ? colors.warnBg : colors.tint, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14 }}
+          >
+            <Icon name={lowCount > 0 ? 'alert-triangle' : 'check-circle'} size={20} color={lowColor} />
+            <Text style={{ flex: 1, fontSize: 14, fontWeight: '600', color: lowColor }}>{lowLabel}</Text>
+            <Icon name="chevron-right" size={18} color={lowColor} />
+          </Pressable>
+
+          <H2>Activité récente</H2>
+          {recentMovements.length === 0 ? (
+            <EmptyState
+              icon="activity"
+              title="Aucun mouvement pour l'instant"
+              message="Les entrées et sorties de stock apparaîtront ici. Scannez un article pour enregistrer un premier mouvement."
+              primaryAction={{ label: 'Scanner', onPress: () => router.push('/scan'), accessibilityLabel: 'Scanner un article', accessibilityHint: 'Ouvre le scanner pour enregistrer une entrée ou une sortie' }}
+            />
+          ) : (
+            <Card style={{ padding: 0, overflow: 'hidden' }}>
+              {recentMovements.map((m) => {
+                const it = itemsById.get(m.itemId);
+                if (!it) return null;
+                return (
+                  <Row key={m.id} onPress={() => router.push(`/article/${it.id}`)}>
+                    <Thumb />
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 15, fontWeight: '600' }}>{it.name}</Text>
+                      <Muted>{m.mode} · {m.mode === 'Entrée' ? '+' : '−'}{m.qty} · {fmtTime(m.ts)}</Muted>
+                    </View>
+                    <Icon name="chevron-right" size={18} color={colors.muted} />
+                  </Row>
+                );
+              })}
+            </Card>
+          )}
+        </>
+      )}
     </Screen>
   );
 }

@@ -4,7 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
 import { colors } from '../../constants/theme';
-import { fmtTime, getPrefs, setPrefs, getStorageInfo, resetAllData } from '../../data/store';
+import { fmtCount, fmtTime, getPrefs, setPrefs, getStorageInfo, loadSampleData, resetAllData } from '../../data/store';
 
 // ── Mock user data (replace with real auth context later) ──────────────────
 const USER = {
@@ -118,7 +118,7 @@ export default function Profile() {
   const handleReset = () => {
     Alert.alert(
       'Réinitialiser les données',
-      'Tous les articles, mouvements et comptages enregistrés sur cet appareil seront supprimés et remplacés par les données d\'exemple. Cette action est irréversible.',
+      'Tous les articles, mouvements et comptages enregistrés sur cet appareil seront supprimés, et les préférences remises par défaut. L\'application sera vide. Cette action est irréversible.',
       [
         { text: 'Annuler', style: 'cancel' },
         {
@@ -128,7 +128,27 @@ export default function Profile() {
             resetAllData();
             setInfo(getStorageInfo());
             setVibration(getPrefs().vibration);
-            Alert.alert('Données réinitialisées', 'Les données d\'exemple ont été rechargées.');
+            Alert.alert('Données réinitialisées', 'L\'application est maintenant vide.');
+          },
+        },
+      ]
+    );
+  };
+
+  const handleLoadSample = () => {
+    Alert.alert(
+      'Charger les données d\'exemple',
+      'Les articles, mouvements et comptages actuels seront supprimés et remplacés par des données d\'exemple. Vos préférences sont conservées. Cette action est irréversible.',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Remplacer les données',
+          style: 'destructive',
+          onPress: () => {
+            loadSampleData();
+            const next = getStorageInfo();
+            setInfo(next);
+            Alert.alert('Données d\'exemple chargées', `${fmtCount(next.itemCount, 'article d\'exemple a été ajouté', 'articles d\'exemple ont été ajoutés')}.`);
           },
         },
       ]
@@ -187,13 +207,28 @@ export default function Profile() {
             </Text>
           )}
           <Text style={{ fontSize: 13, color: colors.muted }}>
-            {info.itemCount} article(s) · {info.movementCount} mouvement(s)
+            {fmtCount(info.itemCount, 'article', 'articles')} · {fmtCount(info.movementCount, 'mouvement', 'mouvements')}
             {info.lastSavedAt !== undefined ? ` · Dernier enregistrement : ${fmtTime(info.lastSavedAt)}` : ''}
           </Text>
+          {info.itemCount === 0 && (
+            <Text style={{ fontSize: 13, color: colors.muted }}>
+              Aucune donnée pour l'instant. Chargez les données d'exemple pour découvrir l'application.
+            </Text>
+          )}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Charger les données d'exemple"
+            accessibilityHint="Remplace les données actuelles par des données d'exemple"
+            onPress={handleLoadSample}
+            style={styles.sampleBtn}
+          >
+            <Feather name="download" size={18} color={colors.primary} />
+            <Text style={styles.sampleBtnText}>Charger les données d'exemple</Text>
+          </Pressable>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Réinitialiser les données"
-            accessibilityHint="Supprime toutes les données de l'appareil et recharge les données d'exemple"
+            accessibilityHint="Supprime toutes les données de l'appareil ; l'application repart vide"
             onPress={handleReset}
             style={styles.resetBtn}
           >
@@ -358,6 +393,22 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     padding: 12,
     overflow: 'hidden',
+  },
+  sampleBtn: {
+    minHeight: 48,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    backgroundColor: '#fff',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  sampleBtnText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.primary,
   },
   resetBtn: {
     minHeight: 48,

@@ -76,13 +76,18 @@ export async function exportCountCsv(id: string): Promise<void> {
       Alert.alert('Export impossible', 'Comptage introuvable.');
       return;
     }
+    const items = getCountItems(id);
+    if (items.length === 0) {
+      Alert.alert('Export impossible', "Aucun article à exporter : l'inventaire est vide.");
+      return;
+    }
 
     const now = new Date();
     const csv = buildCountCsv({
       count: { id: info.id, name: info.name, folder: info.folder, blind: info.blind },
       // Session non enregistrée : pas de date de démarrage fictive.
       session: hasCountSession(id) ? session : { entries: session.entries },
-      items: getCountItems(id),
+      items,
       exportedAt: now.getTime(),
     });
     const title = `Export CSV – ${info.name}`;

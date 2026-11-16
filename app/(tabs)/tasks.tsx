@@ -1,9 +1,9 @@
 import { useCallback, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
-import { Screen, H1, Card, Chip, Btn, Progress, Muted, Icon } from '../../components/ui';
+import { Screen, H1, Card, Chip, Btn, Progress, Muted, Icon, EmptyState } from '../../components/ui';
 import { colors } from '../../constants/theme';
-import { getCycleCount, fmtDateTime, type CycleCountInfo } from '../../data/store';
+import { getCycleCount, fmtCount, fmtDateTime, type CycleCountInfo } from '../../data/store';
 import { exportCountCsv } from '../../data/exportCount';
 
 function CountHeader({ count, done }: { count: CycleCountInfo; done?: boolean }) {
@@ -32,6 +32,7 @@ export default function Tasks() {
   );
 
   const completed = count.completedAt !== undefined;
+  const hasItems = count.total > 0;
   const open = () => router.push(`/count/${count.id}`);
   const handleExport = async () => {
     if (exporting) return;
@@ -51,38 +52,59 @@ export default function Tasks() {
         <Chip label="Terminées" active={tab === 'done'} onPress={() => setTab('done')} />
       </View>
       {tab === 'todo' ? (
-        !completed ? (
+        !hasItems ? (
+          <EmptyState
+            icon="clipboard"
+            title="Aucun comptage à réaliser"
+            message="Le comptage cyclique porte sur tous les articles de l'inventaire. Ajoutez un article pour pouvoir lancer un comptage."
+            primaryAction={{ label: 'Ajouter un article', onPress: () => router.push('/article/new'), accessibilityHint: 'Ouvre le formulaire de création d\'article' }}
+          />
+        ) : !completed ? (
           <Card style={{ borderColor: colors.primary, borderWidth: 2, gap: 12 }}>
             <CountHeader count={count} />
-            <Muted>{count.folder} · {count.total} articles · Échéance : {count.due}</Muted>
+            <Muted>{count.folder} · {fmtCount(count.total, 'article', 'articles')} · Échéance : {count.due}</Muted>
             <View>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
                 <Text style={{ fontSize: 13 }}>Progression</Text>
                 <Text style={{ fontSize: 13, fontWeight: '700' }}>{count.done} / {count.total}</Text>
               </View>
-              <Progress value={count.total > 0 ? count.done / count.total : 0} />
+              <Progress value={count.progress} />
             </View>
             <Btn title={count.done > 0 ? 'Reprendre le comptage' : 'Commencer le comptage'} onPress={open} />
           </Card>
         ) : (
-          <Card><Muted>Aucune tâche à faire.</Muted></Card>
+          <EmptyState
+            icon="check-circle"
+            title="Aucune tâche à faire"
+            message="Le comptage de l'inventaire est terminé. Retrouvez-le dans l'onglet « Terminées »."
+            primaryAction={{ label: 'Voir les tâches terminées', onPress: () => setTab('done') }}
+          />
         )
       ) : completed && count.completedAt !== undefined ? (
         <Card style={{ gap: 12 }}>
           <CountHeader count={count} done />
-          <Muted>{count.folder} · {count.done} / {count.total} articles traités</Muted>
+          <Muted>{count.folder} · {count.done} / {fmtCount(count.total, 'article traité', 'articles traités')}</Muted>
           <Muted>Terminé le {fmtDateTime(count.completedAt)}</Muted>
           <Btn title="Voir le comptage" variant="outline" onPress={open} />
-          <Btn
-            title={exporting ? 'Export en cours…' : 'Exporter (CSV)'}
-            variant="outline"
-            accessibilityLabel="Exporter le comptage au format CSV"
-            disabled={exporting}
-            onPress={handleExport}
-          />
+          {hasItems && (
+            <Btn
+              title={exporting ? 'Export en cours…' : 'Exporter (CSV)'}
+              variant="outline"
+              accessibilityLabel="Exporter le comptage au format CSV"
+              disabled={exporting}
+              onPress={handleExport}
+            />
+          )}
         </Card>
       ) : (
-        <Card><Muted>Aucune tâche terminée.</Muted></Card>
+        <EmptyState
+          icon="inbox"
+          title="Aucune tâche terminée"
+          message="Les comptages terminés apparaîtront ici, avec leur export CSV."
+          primaryAction={hasItems
+            ? { label: 'Voir les tâches à faire', onPress: () => setTab('todo') }
+            : { label: 'Ajouter un article', onPress: () => router.push('/article/new'), accessibilityHint: 'Ouvre le formulaire de création d\'article' }}
+        />
       )}
     </Screen>
   );

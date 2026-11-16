@@ -4,7 +4,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { colors } from '../constants/theme';
 
-export const Icon = (p: { name: React.ComponentProps<typeof Feather>['name']; size?: number; color?: string }) => (
+export type IconName = React.ComponentProps<typeof Feather>['name'];
+
+export const Icon = (p: { name: IconName; size?: number; color?: string }) => (
   <Feather name={p.name} size={p.size ?? 22} color={p.color ?? colors.text} />
 );
 
@@ -66,6 +68,7 @@ export function Btn({
   disabled = false,
   style,
   accessibilityLabel,
+  accessibilityHint,
 }: {
   title: string;
   onPress?: () => void;
@@ -73,12 +76,14 @@ export function Btn({
   disabled?: boolean;
   style?: StyleProp<ViewStyle>;
   accessibilityLabel?: string;
+  accessibilityHint?: string;
 }) {
   const primary = variant === 'primary';
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
+      accessibilityHint={accessibilityHint}
       accessibilityState={{ disabled }}
       disabled={disabled}
       onPress={onPress}
@@ -108,6 +113,70 @@ export const Alert = ({ message, style }: { message: string; style?: StyleProp<V
     <Text style={{ flex: 1, fontSize: 13, color: '#B91C1C', fontWeight: '500' }}>{message}</Text>
   </View>
 );
+
+export type EmptyStateAction = {
+  label: string;
+  onPress: () => void;
+  /** Libellé lu par le lecteur d'écran (par défaut : `label`). */
+  accessibilityLabel?: string;
+  accessibilityHint?: string;
+};
+
+/**
+ * État vide : icône, titre, message et actions facultatives (principale puis
+ * secondaire). Affiché à la place d'une liste ou d'une carte sans contenu.
+ */
+export function EmptyState({
+  icon,
+  title,
+  message,
+  primaryAction,
+  secondaryAction,
+  style,
+}: {
+  icon: IconName;
+  title: string;
+  message?: string;
+  primaryAction?: EmptyStateAction;
+  secondaryAction?: EmptyStateAction;
+  style?: StyleProp<ViewStyle>;
+}) {
+  const hasActions = primaryAction !== undefined || secondaryAction !== undefined;
+  return (
+    <Card style={[{ alignItems: 'center', gap: 10, paddingVertical: 28 }, style]}>
+      <View
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+        style={{ width: 64, height: 64, borderRadius: 32, backgroundColor: colors.tint, alignItems: 'center', justifyContent: 'center', marginBottom: 4 }}
+      >
+        <Icon name={icon} size={28} color={colors.primary} />
+      </View>
+      <Text accessibilityRole="header" style={{ fontSize: 17, fontWeight: '600', color: colors.text, textAlign: 'center' }}>{title}</Text>
+      {message !== undefined && <Muted style={{ fontSize: 14, textAlign: 'center', lineHeight: 20 }}>{message}</Muted>}
+      {hasActions && (
+        <View style={{ alignSelf: 'stretch', gap: 8, marginTop: 8 }}>
+          {primaryAction && (
+            <Btn
+              title={primaryAction.label}
+              onPress={primaryAction.onPress}
+              accessibilityLabel={primaryAction.accessibilityLabel ?? primaryAction.label}
+              accessibilityHint={primaryAction.accessibilityHint}
+            />
+          )}
+          {secondaryAction && (
+            <Btn
+              title={secondaryAction.label}
+              variant="outline"
+              onPress={secondaryAction.onPress}
+              accessibilityLabel={secondaryAction.accessibilityLabel ?? secondaryAction.label}
+              accessibilityHint={secondaryAction.accessibilityHint}
+            />
+          )}
+        </View>
+      )}
+    </Card>
+  );
+}
 
 export const Chip = ({ label, active, onPress }: { label: string; active?: boolean; onPress?: () => void }) => (
   <Pressable onPress={onPress} style={{ minHeight: 44, paddingHorizontal: 18, borderRadius: 999, justifyContent: 'center', backgroundColor: active ? colors.primary : '#fff', borderWidth: active ? 0 : 1, borderColor: colors.field }}>
