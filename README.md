@@ -17,6 +17,7 @@ L'application fonctionne **entièrement hors ligne**, sans serveur : articles, m
 - **Saisie manuelle** : bouton sur l'écran de scan pour taper un code-barres ou un SKU (utile sur simulateur ou sans caméra).
 - Le code est recherché par code-barres ou SKU. Code inconnu → « Créer l'article » ouvre le formulaire `article/new` prérempli ; au retour, l'article créé est retrouvé et le mouvement Entrée / Sortie peut être saisi.
 - Pendant un comptage cyclique, « Scanner » ouvre `/scan?countId=…` : le code lu renvoie directement sur l'article correspondant du comptage. La progression du comptage est enregistrée ; à la fin, les écarts peuvent être appliqués au stock ou ignorés.
+- **Export CSV d'un comptage** : bouton « Exporter (CSV) » sur l'écran de comptage (en cours ou terminé) et sur la carte du comptage dans Tâches › Terminées. Le fichier (`stockly-comptage-<id>-<aaaammjj>-<hhmm>.csv`) est écrit dans le cache avec **expo-file-system** puis partagé avec **expo-sharing** (repli : partage du texte si ces modules natifs sont absents). Format prévu pour Excel en français : séparateur `;`, **UTF-8 avec BOM**, fins de ligne CRLF. Il contient un en-tête (comptage, dossier, statut, dates, comptage à l'aveugle), une ligne par article (SKU, code-barres, article, dossier, stock attendu, quantité comptée, écart, statut) et les totaux. Le stock attendu est celui mémorisé à la clôture du comptage (avant ajustement) ; pour un comptage en cours, c'est le stock actuel, sauf en comptage à l'aveugle où le stock attendu et les écarts ne sont exportés qu'une fois le comptage terminé. Les SKU et codes-barres composés uniquement de chiffres sont écrits `="…"` pour qu'Excel les garde en texte (zéros de tête conservés).
 
 ## Stack
 
@@ -49,6 +50,8 @@ constants/theme.ts     Couleurs et thème
 data/mock.ts           Données d'exemple (chargées au premier lancement)
 data/storage.ts        Accès MMKV (repli en mémoire si indisponible)
 data/store.ts          État de l'app persisté (articles, mouvements, comptages, préférences)
+data/csv.ts            Construction du CSV d'un comptage (module pur, testable)
+data/exportCount.ts    Export CSV d'un comptage (fichier + feuille de partage)
 assets/images/         Icône, icône adaptative, splash, favicon
 .eas/workflows/        Workflows EAS (CI/CD)
 ```
@@ -83,7 +86,7 @@ npx expo config --json > /dev/null   # vérification rapide
 
 ## À faire
 
-- Export / sauvegarde des données (aucune synchronisation serveur pour l'instant).
+- Sauvegarde des données (aucune synchronisation serveur pour l'instant).
 - Remplacer les icônes provisoires de `assets/images/` par les visuels définitifs.
 - Le code-barres affiché sur la fiche détail est décoratif ; utilisez `react-native-svg` avec une bibliothèque de codes-barres pour un vrai rendu.
 - Sentry : `@sentry/react-native` et son plugin sont installés, mais le SDK n'est pas encore initialisé. Ajoutez `Sentry.init({ dsn: '…' })` dans `app/_layout.tsx`, un `metro.config.js` basé sur `getSentryExpoConfig`, et le secret `SENTRY_AUTH_TOKEN` dans EAS pour l'envoi des source maps.

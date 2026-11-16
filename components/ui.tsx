@@ -65,17 +65,21 @@ export function Btn({
   variant = 'primary',
   disabled = false,
   style,
+  accessibilityLabel,
 }: {
   title: string;
   onPress?: () => void;
   variant?: 'primary' | 'outline';
   disabled?: boolean;
   style?: StyleProp<ViewStyle>;
+  accessibilityLabel?: string;
 }) {
   const primary = variant === 'primary';
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      accessibilityState={{ disabled }}
       disabled={disabled}
       onPress={onPress}
       style={[

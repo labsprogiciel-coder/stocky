@@ -31,6 +31,11 @@ export type CountSession = {
   idx: number;
   startedAt: number;
   completedAt?: number;
+  /**
+   * Stock de chaque article au moment de la clôture, avant ajustement
+   * (absent des sessions en cours et de celles enregistrées avant son ajout).
+   */
+  expected?: Record<string, number>;
 };
 
 export type CycleCountInfo = {
@@ -121,12 +126,22 @@ function toCountSession(v: unknown): CountSession | null {
   for (const [itemId, e] of Object.entries(v.entries)) {
     if (isCountEntry(e)) entries[itemId] = { qty: e.qty, status: e.status };
   }
+  // `expected` est facultatif (sessions antérieures) : une valeur invalide est
+  // ignorée plutôt que de rejeter la session.
+  let expected: Record<string, number> | undefined;
+  if (isRecord(v.expected)) {
+    expected = {};
+    for (const [itemId, q] of Object.entries(v.expected)) {
+      if (isFiniteNumber(q) && q >= 0) expected[itemId] = q;
+    }
+  }
   return {
     id: v.id,
     entries,
     idx: Math.max(0, Math.floor(v.idx)),
     startedAt: v.startedAt,
     ...(v.completedAt !== undefined ? { completedAt: v.completedAt } : {}),
+    ...(expected ? { expected } : {}),
   };
 }
 
@@ -416,7 +431,13 @@ function freshSession(id: string): CountSession {
 export function getCountSession(id: string): CountSession | undefined {
   if (id !== cycleCount.id) return undefined;
   const s = state().sessions[id];
-  return s ? { ...s, entries: { ...s.entries } } : freshSession(id);
+  if (!s) return freshSession(id);
+  return { ...s, entries: { ...s.entries }, ...(s.expected ? { expected: { ...s.expected } } : {}) };
+}
+
+/** Vrai si une session est enregistrée (comptage démarré). */
+export function hasCountSession(id: string): boolean {
+  return id === cycleCount.id && state().sessions[id] !== undefined;
 }
 
 export function getCycleCount(): CycleCountInfo {
@@ -463,12 +484,18 @@ export function setCountIndex(id: string, idx: number): void {
 }
 
 /**
- * Clôture le comptage. Si `applyAdjustments`, chaque article « Compté » dont
- * la quantité diffère du stock est ajusté, avec un mouvement Entrée/Sortie.
+ * Clôture le comptage. Le stock de chaque article est d'abord mémorisé dans
+ * `session.expected` (stock attendu de l'export CSV). Si `applyAdjustments`,
+ * chaque article « Compté » dont la quantité diffère du stock est ajusté,
+ * avec un mouvement Entrée/Sortie.
  */
 export function completeCount(id: string, applyAdjustments: boolean): CompleteCountResult {
   const session = writableSession(id);
   if (typeof session === 'string') return { ok: false, error: session };
+
+  const expected: Record<string, number> = {};
+  for (const item of getCountItems(id)) expected[item.id] = item.qty;
+  session.expected = expected;
 
   let adjusted = 0;
   if (applyAdjustments) {
