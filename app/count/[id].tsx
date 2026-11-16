@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react';
 import { View, Text, Pressable, Alert } from 'react-native';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
-import { Screen, H2, Card, Btn, Progress, Stepper, Thumb, Muted, Icon, Row, Alert as InlineAlert } from '../../components/ui';
+import { Screen, H2, Card, Btn, Progress, Stepper, Thumb, Muted, Icon, Row, EmptyState, Alert as InlineAlert } from '../../components/ui';
 import { colors } from '../../constants/theme';
 import {
   type CountEntry,
@@ -108,7 +108,28 @@ export default function Count() {
     return (
       <Screen edges={['top', 'bottom']}>
         <Header title="Comptage" onClose={() => router.back()} />
-        <Muted>Comptage introuvable.</Muted>
+        <EmptyState
+          icon="alert-circle"
+          title="Comptage introuvable"
+          message="Ce comptage n'existe pas sur cet appareil."
+          primaryAction={{ label: 'Retour', onPress: () => router.back(), accessibilityLabel: 'Retour à l\'écran précédent' }}
+        />
+      </Screen>
+    );
+  }
+
+  // ── Inventaire vide : rien à compter ──────────────────────────────────────
+  if (list.length === 0) {
+    return (
+      <Screen edges={['top', 'bottom']}>
+        <Header title={info.name} onClose={() => router.back()} />
+        <EmptyState
+          icon="package"
+          title="Aucun article à compter"
+          message="Le comptage porte sur tous les articles de l'inventaire. Ajoutez un article pour commencer le comptage."
+          primaryAction={{ label: 'Ajouter un article', onPress: () => router.push('/article/new'), accessibilityHint: 'Ouvre le formulaire de création d\'article' }}
+          secondaryAction={{ label: 'Retour', onPress: () => router.back(), accessibilityLabel: 'Retour à l\'écran précédent' }}
+        />
       </Screen>
     );
   }
@@ -148,16 +169,8 @@ export default function Count() {
     );
   }
 
-  if (list.length === 0) {
-    return (
-      <Screen edges={['top', 'bottom']}>
-        <Header title={info.name} onClose={() => router.back()} />
-        <Muted>Aucun article à compter.</Muted>
-      </Screen>
-    );
-  }
-
-  const cur = list[Math.min(idx, list.length - 1)];
+  const curIdx = Math.min(Math.max(0, idx), list.length - 1);
+  const cur = list[curIdx];
 
   const next = (status: CountEntry['status']) => {
     if (status === 'Compté' && qty < 0) {
@@ -171,8 +184,8 @@ export default function Count() {
     setCounts(nextCounts);
     setError(null);
     setScanError(null);
-    if (idx < list.length - 1) {
-      const ni = idx + 1;
+    if (curIdx < list.length - 1) {
+      const ni = curIdx + 1;
       setIdx(ni);
       setCountIndex(id, ni);
       setQty(nextCounts[list[ni].id]?.qty ?? 0);
@@ -233,7 +246,7 @@ export default function Count() {
     }
   };
 
-  const isLast = idx === list.length - 1;
+  const isLast = curIdx === list.length - 1;
   const allDone = doneCount === list.length;
   const curStatus = statusOf(cur.id);
 
@@ -259,7 +272,7 @@ export default function Count() {
           <Thumb size={72} />
           <View style={{ flex: 1 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-              <Text style={{ fontSize: 13, color: colors.muted, fontWeight: '600' }}>{idx + 1} / {list.length}</Text>
+              <Text style={{ fontSize: 13, color: colors.muted, fontWeight: '600' }}>{curIdx + 1} / {list.length}</Text>
               {curStatus !== 'À compter' && (
                 <View style={{ paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999, backgroundColor: curStatus === 'Compté' ? colors.tint : colors.border }}>
                   <Text style={{ fontSize: 11, fontWeight: '700', color: curStatus === 'Compté' ? colors.primary : colors.muted }}>
@@ -315,7 +328,7 @@ export default function Count() {
           return (
             <Row key={it.id} onPress={() => jumpTo(i)}>
               <Thumb size={40} />
-              <Text style={{ flex: 1, fontSize: 14, fontWeight: i === idx ? '700' : '600' }}>{it.name}</Text>
+              <Text style={{ flex: 1, fontSize: 14, fontWeight: i === curIdx ? '700' : '600' }}>{it.name}</Text>
               <Text style={{
                 fontSize: 12,
                 fontWeight: '600',
