@@ -623,30 +623,64 @@ function state(): State {
 
 type Part = 'items' | 'units' | 'movements' | 'sessions' | 'prefs';
 
-/** Écrit les parties demandées ; renvoie `false` si une écriture a échoué. */
-function persist(...parts: Part[]): boolean {
+const ALL_PARTS: readonly Part[] = ['items', 'units', 'movements', 'sessions', 'prefs'];
+
+/**
+ * Vrai si l'annulation d'une écriture partielle n'a pas pu être réécrite : le
+ * stockage peut alors différer de la mémoire. MMKV n'écrit pas plusieurs clés
+ * de façon atomique ; le prochain enregistrement réécrit donc toutes les clés,
+ * et l'indicateur n'est levé que si cette réécriture complète réussit.
+ */
+let _storageInconsistent = false;
+
+/** Écrit les parties demandées, sans toucher à la date ; renvoie celles écrites. */
+function writeParts(parts: readonly Part[]): Part[] {
   const s = state();
-  let ok = true;
+  const written: Part[] = [];
   for (const p of parts) {
-    if (p === 'items') ok = writeJSON(KEYS.items, s.items) && ok;
-    else if (p === 'units') ok = writeJSON(KEYS.units, s.units) && ok;
-    else if (p === 'movements') ok = writeJSON(KEYS.movements, s.movements) && ok;
-    else if (p === 'sessions') ok = writeJSON(KEYS.countSessions, s.sessions) && ok;
-    else ok = writeJSON(KEYS.prefs, s.prefs) && ok;
+    const ok =
+      p === 'items' ? writeJSON(KEYS.items, s.items)
+      : p === 'units' ? writeJSON(KEYS.units, s.units)
+      : p === 'movements' ? writeJSON(KEYS.movements, s.movements)
+      : p === 'sessions' ? writeJSON(KEYS.countSessions, s.sessions)
+      : writeJSON(KEYS.prefs, s.prefs);
+    if (ok) written.push(p);
   }
+  return written;
+}
+
+/**
+ * Écrit `parts` (toutes les parties si le stockage est peut-être incohérent)
+ * et, si tout a été écrit, la date du dernier enregistrement. Renvoie les
+ * parties effectivement écrites.
+ */
+function save(parts: readonly Part[]): { ok: boolean; written: Part[] } {
+  const full = _storageInconsistent;
+  const list = full ? ALL_PARTS : parts;
+  const written = writeParts(list);
   // N'avancer la date du dernier enregistrement que si tout a été écrit.
-  if (!ok) return false;
+  if (written.length < list.length) return { ok: false, written };
+  if (full) _storageInconsistent = false;
+  const s = state();
   s.lastSavedAt = Date.now();
   writeJSON(KEYS.meta, { lastSavedAt: s.lastSavedAt });
-  return true;
+  return { ok: true, written };
+}
+
+/** Écrit les parties demandées ; renvoie `false` si une écriture a échoué. */
+function persist(...parts: Part[]): boolean {
+  return save(parts).ok;
 }
 
 function persistAll() {
-  persist('items', 'units', 'movements', 'sessions', 'prefs');
+  persist(...ALL_PARTS);
 }
 
 const SAVE_ERROR =
   "Impossible d'enregistrer la modification sur l'appareil (stockage plein ou indisponible). Rien n'a été modifié.";
+
+const PARTIAL_SAVE_ERROR =
+  "Enregistrement incomplet : les données de l'appareil peuvent être partiellement enregistrées. Réessayez l'opération.";
 
 type Snapshot = Pick<State, 'items' | 'units' | 'movements' | 'sessions'>;
 
@@ -663,15 +697,19 @@ function snapshot(): Snapshot {
 }
 
 /**
- * Écrit `parts`. En cas d'échec, rétablit l'état `snap` en mémoire et tente de
- * le réécrire (une écriture partielle ne doit pas laisser le stockage
- * incohérent). Renvoie `false` si la modification a été annulée.
+ * Écrit `parts`. En cas d'échec, rétablit l'état `snap` en mémoire et réécrit
+ * les clés déjà écrites (une écriture refusée laisse l'ancienne valeur), sans
+ * avancer la date du dernier enregistrement. Renvoie `null` si tout a été
+ * enregistré, sinon le message d'erreur : `SAVE_ERROR` si le stockage est
+ * revenu à l'état précédent, `PARTIAL_SAVE_ERROR` s'il peut différer de la
+ * mémoire (voir `_storageInconsistent`). Ne lève pas.
  */
-function commit(snap: Snapshot, ...parts: Part[]): boolean {
-  if (persist(...parts)) return true;
+function commit(snap: Snapshot, ...parts: Part[]): string | null {
+  const { ok, written } = save(parts);
+  if (ok) return null;
   Object.assign(state(), snap);
-  persist(...parts);
-  return false;
+  if (writeParts(written).length < written.length) _storageInconsistent = true;
+  return _storageInconsistent ? PARTIAL_SAVE_ERROR : SAVE_ERROR;
 }
 
 function replaceItem(updated: Item) {
@@ -1179,7 +1217,8 @@ export function addUnit(itemId: string, input: NewUnitInput): UnitResult {
   s.units = [...s.units, unit];
   if (unit.status === 'in_stock') pushMovement(item, 'Entrée', 1, unit);
   syncDerivedQty(itemId);
-  if (!commit(snap, 'items', 'units', 'movements')) return { error: SAVE_ERROR };
+  const err = commit(snap, 'items', 'units', 'movements');
+  if (err) return { error: err };
   return { unit };
 }
 
@@ -1209,7 +1248,8 @@ export function updateUnit(id: string, patch: UpdateUnitPatch): UnitResult {
   const unit: Unit = { ...base, ...v.fields, updatedAt: Date.now() };
   const snap = snapshot();
   applyUnit(current, unit);
-  if (!commit(snap, 'items', 'units', 'movements')) return { error: SAVE_ERROR };
+  const err = commit(snap, 'items', 'units', 'movements');
+  if (err) return { error: err };
   return { unit };
 }
 
@@ -1240,7 +1280,8 @@ export function deleteUnit(id: string): DeleteUnitResult {
     }
   }
   s.sessions = sessions;
-  if (!commit(snap, 'items', 'units', 'movements', 'sessions')) return { ok: false, error: SAVE_ERROR };
+  const err = commit(snap, 'items', 'units', 'movements', 'sessions');
+  if (err) return { ok: false, error: err };
   for (const [countId, code] of _pendingCountScans) {
     if (findUnitIn([unit], code)) _pendingCountScans.delete(countId);
   }
@@ -1367,7 +1408,8 @@ export function markUnitFound(countId: string, code: string): MarkUnitFoundResul
   if (!duplicate) {
     const next = serials.includes(unit.id) ? serials : [...serials, unit.id];
     session.entries = { ...session.entries, [item.id]: { qty: next.length, status: 'Compté', serials: next } };
-    if (!commit(snap, 'sessions')) return { ok: false, error: SAVE_ERROR };
+    const err = commit(snap, 'sessions');
+    if (err) return { ok: false, error: err };
   }
   return { ok: true, itemId: item.id, unitId: unit.id, duplicate };
 }
@@ -1384,7 +1426,7 @@ export function unmarkUnitFound(countId: string, unitId: string): string | null 
   if (!prev?.serials?.includes(unitId)) return null;
   const serials = prev.serials.filter((x) => x !== unitId);
   session.entries = { ...session.entries, [unit.itemId]: { ...prev, serials, qty: serials.length } };
-  return commit(snap, 'sessions') ? null : SAVE_ERROR;
+  return commit(snap, 'sessions');
 }
 
 /**
@@ -1518,7 +1560,8 @@ export function completeCount(id: string, applyAdjustments: boolean): CompleteCo
   if (Object.keys(unitSnapshot).length > 0) session.unitSnapshot = unitSnapshot;
   else delete session.unitSnapshot;
   session.completedAt = Date.now();
-  if (!commit(snap, 'items', 'units', 'movements', 'sessions')) return { ok: false, error: SAVE_ERROR };
+  const err = commit(snap, 'items', 'units', 'movements', 'sessions');
+  if (err) return { ok: false, error: err };
   return { ok: true, adjusted, unitsUpdated };
 }
 
