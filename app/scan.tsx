@@ -7,8 +7,9 @@
  *   et actions selon le statut (Attribuer, Envoyer en réparation, Retirer,
  *   Remettre en stock).
  * - Article suivi par numéro de série : Entrée = « Ajouter des appareils »
- *   (boucle : chaque code lu est ajouté comme numéro de série, le scanner reste
- *   prêt pour le suivant) ; la Sortie se fait en scannant l'appareil lui-même.
+ *   (boucle : chaque code lu est ajouté comme numéro de série, sauf un IMEI ou
+ *   un code-barres produit EAN/UPC lu par la caméra ; le scanner reste prêt
+ *   pour le suivant) ; la Sortie se fait en scannant l'appareil lui-même.
  * - Article suivi en quantité : panneau Entrée / Sortie inchangé.
  * - Code inconnu : « Créer l'article » ou « Ajouter comme appareil ».
  *
@@ -53,6 +54,14 @@ import {
 } from '../data/store';
 
 const BARCODE_TYPES: BarcodeType[] = ['ean13', 'ean8', 'upc_a', 'upc_e', 'code128', 'code39', 'qr'];
+
+/**
+ * Symbologies des codes-barres produit (EAN-13/8, UPC-A/E), d'après le `type`
+ * renvoyé par la caméra (`ean13`, `upc_a`… ; insensible à la casse). Dans la
+ * boucle « Ajouter des appareils », ces lectures ne deviennent jamais des
+ * numéros de série (un S/N est en Code 128, Code 39 ou QR).
+ */
+const PRODUCT_SYMBOLOGY = /^(ean_?(13|8)|upc_?[ae])$/i;
 
 /** Délai avant d'accepter une nouvelle lecture dans les modes « à la suite ». */
 const LOOP_UNLOCK_MS = 700;
@@ -162,7 +171,7 @@ export default function Scan() {
   };
 
   /** Boucle « Ajouter des appareils » : le code lu devient un numéro de série de `target`. */
-  const addSerial = (target: Item, data: string, source: 'camera' | 'manual') => {
+  const addSerial = (target: Item, data: string, source: 'camera' | 'manual', symbology?: string) => {
     // Un IMEI (15 chiffres, clé de Luhn valide) lu sur l'étiquette n'est pas
     // un numéro de série. La saisie manuelle reste possible.
     if (source === 'camera' && isValidImei(imeiDigits(data)) && !findUnitByCode(data)) {
@@ -181,6 +190,15 @@ export default function Scan() {
         text: asItem.id === target.id
           ? "C'est le code de l'article lui-même : saisissez le numéro de série de l'appareil."
           : `Ce code est celui de l'article « ${asItem.name} », pas un numéro de série.`,
+      });
+      return;
+    }
+    // Code-barres produit (EAN/UPC) d'un carton, lu en même temps que le S/N :
+    // ce n'est pas un numéro de série. La saisie manuelle reste possible.
+    if (source === 'camera' && symbology !== undefined && PRODUCT_SYMBOLOGY.test(symbology)) {
+      setFeedback({
+        kind: 'info',
+        text: `Code ${data} ignoré : c'est un code-barres produit (EAN/UPC). Scannez le numéro de série (S/N) ou saisissez-le manuellement.`,
       });
       return;
     }
@@ -234,7 +252,8 @@ export default function Scan() {
     setFeedback({ kind: 'error', text: `Code inconnu : ${data}` });
   };
 
-  const handleCode = (raw: string, source: 'camera' | 'manual') => {
+  /** `symbology` : type du code lu par la caméra (absent en saisie manuelle). */
+  const handleCode = (raw: string, source: 'camera' | 'manual', symbology?: string) => {
     const data = raw.trim();
     if (!data || !focused) return;
     if (source === 'camera') {
@@ -276,7 +295,7 @@ export default function Scan() {
     }
 
     if (addLoop) {
-      addSerial(addTarget, data, source);
+      addSerial(addTarget, data, source, symbology);
       if (source === 'manual') setManualText('');
       scheduleUnlock();
       return;
@@ -417,7 +436,7 @@ export default function Scan() {
           facing="back"
           enableTorch={torch}
           barcodeScannerSettings={{ barcodeTypes: BARCODE_TYPES }}
-          onBarcodeScanned={scanning ? (r) => handleCode(r.data, 'camera') : undefined}
+          onBarcodeScanned={scanning ? (r) => handleCode(r.data, 'camera', typeof r.type === 'string' ? r.type : undefined) : undefined}
         />
       )}
 

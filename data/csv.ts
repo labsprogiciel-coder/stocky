@@ -23,7 +23,10 @@
  * « Trouvé », « Manquant » (attendu, non trouvé), « Inattendu » (trouvé, non
  * attendu) ou « Non compté » (article pas encore compté). En comptage à
  * l'aveugle en cours, seuls les appareils trouvés sont listés (« Trouvé »).
- * Les articles suivis en quantité ne sont pas concernés.
+ * Les articles suivis en quantité ne sont pas concernés. Le total « Articles
+ * avec écart » compte une fois chaque article compté dont l'écart net est non
+ * nul OU qui a un appareil manquant ou inattendu ; « Somme des écarts » reste
+ * la somme des écarts nets.
  */
 import type { CountSession, CountStatus } from './store';
 import { UNIT_STATUS_LABELS, type UnitStatus } from './units';
@@ -169,6 +172,11 @@ export function buildCountCsv({ count, session, items, exportedAt, serialDetails
   let skipped = 0;
   let withDiff = 0;
   let diffSum = 0;
+  // Article suivi par numéro de série : un appareil manquant compensé par un
+  // appareil inattendu laisse un écart net nul, mais c'est bien un écart.
+  const serialMismatch = new Set(
+    (serialDetails ?? []).filter((d) => d.missing.length > 0 || d.unexpected.length > 0).map((d) => d.itemId)
+  );
 
   for (const item of items) {
     const entry = session.entries[item.id];
@@ -181,7 +189,7 @@ export function buildCountCsv({ count, session, items, exportedAt, serialDetails
       countedQty = entry.qty;
       if (!hideExpected) {
         diff = entry.qty - expected;
-        if (diff !== 0) withDiff++;
+        if (diff !== 0 || serialMismatch.has(item.id)) withDiff++;
         diffSum += diff;
       }
     } else if (entry?.status === 'Passé') {

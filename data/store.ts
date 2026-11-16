@@ -550,6 +550,13 @@ function loadState(): State {
     if (i.barcode !== undefined) itemCodes.add(looseKey(i.barcode));
   }
   itemCodes.delete('');
+  // Formes IMEI des codes d'articles (même équivalence que `findUnitByCode`).
+  const itemImeis = new Set<string>();
+  for (const i of items) {
+    itemImeis.add(imeiForm(i.sku));
+    if (i.barcode !== undefined) itemImeis.add(imeiForm(i.barcode));
+  }
+  itemImeis.delete('');
   const serialKeys = new Set<string>(); // serialKey des numéros de série conservés
   const serialDigits = new Set<string>(); // les mêmes, tirets retirés (forme IMEI)
   const imeis = new Set<string>(); // IMEI conservés
@@ -559,7 +566,7 @@ function loadState(): State {
     const sd = imeiDigits(sk);
     if (serialKeys.has(sk) || imeis.has(sd)) return false;
     if (u.imei !== undefined && (imeis.has(u.imei) || serialDigits.has(u.imei))) return false;
-    if (itemCodes.has(looseKey(u.serial)) || (u.imei !== undefined && itemCodes.has(looseKey(u.imei)))) return false;
+    if (itemCodes.has(looseKey(u.serial)) || (u.imei !== undefined && itemImeis.has(u.imei))) return false;
     serialKeys.add(sk);
     serialDigits.add(sd);
     if (u.imei !== undefined) imeis.add(u.imei);
@@ -638,6 +645,35 @@ function persistAll() {
   persist('items', 'units', 'movements', 'sessions', 'prefs');
 }
 
+const SAVE_ERROR =
+  "Impossible d'enregistrer la modification sur l'appareil (stockage plein ou indisponible). Rien n'a été modifié.";
+
+type Snapshot = Pick<State, 'items' | 'units' | 'movements' | 'sessions'>;
+
+/**
+ * Copie de l'état avant une mutation, pour l'annuler si l'écriture échoue.
+ * Les sessions sont copiées une à une : `writableSession` renvoie l'objet
+ * session enregistré, que les fonctions de comptage modifient sur place.
+ */
+function snapshot(): Snapshot {
+  const s = state();
+  const sessions: Record<string, CountSession> = {};
+  for (const [sid, session] of Object.entries(s.sessions)) sessions[sid] = { ...session };
+  return { items: s.items, units: s.units, movements: s.movements, sessions };
+}
+
+/**
+ * Écrit `parts`. En cas d'échec, rétablit l'état `snap` en mémoire et tente de
+ * le réécrire (une écriture partielle ne doit pas laisser le stockage
+ * incohérent). Renvoie `false` si la modification a été annulée.
+ */
+function commit(snap: Snapshot, ...parts: Part[]): boolean {
+  if (persist(...parts)) return true;
+  Object.assign(state(), snap);
+  persist(...parts);
+  return false;
+}
+
 function replaceItem(updated: Item) {
   const s = state();
   s.items = s.items.map((i) => (i.id === updated.id ? updated : i));
@@ -712,6 +748,15 @@ function isCodeTaken(code: string, exceptId?: string): boolean {
  */
 const looseKey = (s: string) => codeKey(s.replace(/\s+/g, ''));
 
+/**
+ * Forme IMEI d'un code : 15 chiffres une fois espaces et tirets retirés
+ * (même règle que la recherche par IMEI de `findUnitByCode`), sinon `''`.
+ */
+function imeiForm(code: string): string {
+  const d = imeiDigits(code.trim());
+  return /^\d{15}$/.test(d) ? d : '';
+}
+
 /** `true` si `code` correspond au code-barres ou au SKU d'un article. */
 function isItemCode(code: string): boolean {
   const c = looseKey(code);
@@ -719,11 +764,23 @@ function isItemCode(code: string): boolean {
   return state().items.some((i) => looseKey(i.sku) === c || (i.barcode !== undefined && looseKey(i.barcode) === c));
 }
 
-/** `true` si `code` correspond au numéro de série ou à l'IMEI d'une unité. */
+/**
+ * `true` si l'IMEI normalisé `imei` serait aussi trouvé par un code-barres ou
+ * un SKU d'article (ex. SKU `356-938035643809`) : tirets et espaces ignorés.
+ */
+function isItemImei(imei: string): boolean {
+  return state().items.some((i) => imeiForm(i.sku) === imei || (i.barcode !== undefined && imeiForm(i.barcode) === imei));
+}
+
+/**
+ * `true` si `code` correspond au numéro de série ou à l'IMEI d'une unité,
+ * avec les équivalences de `findUnitByCode` (IMEI : tirets et espaces ignorés).
+ */
 function isUnitCode(code: string): boolean {
   const c = looseKey(code);
   if (!c) return false;
-  return state().units.some((u) => looseKey(u.serial) === c || (u.imei !== undefined && u.imei === c));
+  const imei = imeiForm(code);
+  return state().units.some((u) => looseKey(u.serial) === c || (u.imei !== undefined && u.imei === imei));
 }
 
 /** Prochaine référence `SKU-n` libre (et différente de `avoid`, le code-barres saisi). */
@@ -1062,7 +1119,7 @@ function validateUnit(d: UnitDraft, exceptId?: string): { fields: UnitFields } |
     imei = ir.imei;
     const dupImei = others.find((u) => u.imei === imei || imeiDigits(serialKey(u.serial)) === imei);
     if (dupImei) return { error: `Cet IMEI est déjà enregistré${itemLabel(dupImei.itemId)}.`, field: 'imei' };
-    if (isItemCode(imei)) return { error: "Cet IMEI est déjà utilisé comme code-barres ou SKU d'un article.", field: 'imei' };
+    if (isItemImei(imei)) return { error: "Cet IMEI est déjà utilisé comme code-barres ou SKU d'un article.", field: 'imei' };
   }
 
   if (!isUnitStatus(d.status)) return { error: 'Statut invalide.', field: 'status' };
@@ -1117,11 +1174,12 @@ export function addUnit(itemId: string, input: NewUnitInput): UnitResult {
 
   const now = Date.now();
   const unit: Unit = { id: uid('u'), itemId, ...v.fields, receivedAt: now, updatedAt: now };
+  const snap = snapshot();
   const s = state();
   s.units = [...s.units, unit];
   if (unit.status === 'in_stock') pushMovement(item, 'Entrée', 1, unit);
   syncDerivedQty(itemId);
-  persist('items', 'units', 'movements');
+  if (!commit(snap, 'items', 'units', 'movements')) return { error: SAVE_ERROR };
   return { unit };
 }
 
@@ -1149,8 +1207,9 @@ export function updateUnit(id: string, patch: UpdateUnitPatch): UnitResult {
 
   const { imei: _i, assignee: _a, note: _n, ...base } = current;
   const unit: Unit = { ...base, ...v.fields, updatedAt: Date.now() };
+  const snap = snapshot();
   applyUnit(current, unit);
-  persist('items', 'units', 'movements');
+  if (!commit(snap, 'items', 'units', 'movements')) return { error: SAVE_ERROR };
   return { unit };
 }
 
@@ -1163,6 +1222,7 @@ export function updateUnit(id: string, patch: UpdateUnitPatch): UnitResult {
 export function deleteUnit(id: string): DeleteUnitResult {
   const unit = getUnit(id);
   if (!unit) return { ok: false, error: 'Numéro de série introuvable.' };
+  const snap = snapshot();
   const s = state();
   s.units = s.units.filter((u) => u.id !== id);
   const item = getItem(unit.itemId);
@@ -1180,10 +1240,10 @@ export function deleteUnit(id: string): DeleteUnitResult {
     }
   }
   s.sessions = sessions;
+  if (!commit(snap, 'items', 'units', 'movements', 'sessions')) return { ok: false, error: SAVE_ERROR };
   for (const [countId, code] of _pendingCountScans) {
     if (findUnitIn([unit], code)) _pendingCountScans.delete(countId);
   }
-  persist('items', 'units', 'movements', 'sessions');
   return { ok: true };
 }
 
@@ -1297,6 +1357,7 @@ export function markUnitFound(countId: string, code: string): MarkUnitFoundResul
   const item = getCountItems(countId).find((i) => i.id === unit.itemId);
   if (!item) return { ok: false, error: `Article hors comptage : ${getItem(unit.itemId)?.name ?? unit.serial}` };
   if (!item.serialized) return { ok: false, error: "Cet article n'est pas suivi par numéro de série." };
+  const snap = snapshot();
   const session = writableSession(countId);
   if (typeof session === 'string') return { ok: false, error: session };
 
@@ -1306,7 +1367,7 @@ export function markUnitFound(countId: string, code: string): MarkUnitFoundResul
   if (!duplicate) {
     const next = serials.includes(unit.id) ? serials : [...serials, unit.id];
     session.entries = { ...session.entries, [item.id]: { qty: next.length, status: 'Compté', serials: next } };
-    persist('sessions');
+    if (!commit(snap, 'sessions')) return { ok: false, error: SAVE_ERROR };
   }
   return { ok: true, itemId: item.id, unitId: unit.id, duplicate };
 }
@@ -1316,14 +1377,14 @@ export function unmarkUnitFound(countId: string, unitId: string): string | null 
   if (countId !== CYCLE_COUNT.id) return 'Comptage introuvable.';
   const unit = getUnit(unitId);
   if (!unit) return 'Numéro de série introuvable.';
+  const snap = snapshot();
   const session = writableSession(countId);
   if (typeof session === 'string') return session;
   const prev = session.entries[unit.itemId];
   if (!prev?.serials?.includes(unitId)) return null;
   const serials = prev.serials.filter((x) => x !== unitId);
   session.entries = { ...session.entries, [unit.itemId]: { ...prev, serials, qty: serials.length } };
-  persist('sessions');
-  return null;
+  return commit(snap, 'sessions') ? null : SAVE_ERROR;
 }
 
 /**
@@ -1397,6 +1458,7 @@ export function completeCount(id: string, applyAdjustments: boolean): CompleteCo
   if (getCountItems(id).length === 0) {
     return { ok: false, error: 'Aucun article à compter. Ajoutez des articles avant de terminer le comptage.' };
   }
+  const snap = snapshot();
   const session = writableSession(id);
   if (typeof session === 'string') return { ok: false, error: session };
 
@@ -1456,7 +1518,7 @@ export function completeCount(id: string, applyAdjustments: boolean): CompleteCo
   if (Object.keys(unitSnapshot).length > 0) session.unitSnapshot = unitSnapshot;
   else delete session.unitSnapshot;
   session.completedAt = Date.now();
-  persist('items', 'units', 'movements', 'sessions');
+  if (!commit(snap, 'items', 'units', 'movements', 'sessions')) return { ok: false, error: SAVE_ERROR };
   return { ok: true, adjusted, unitsUpdated };
 }
 
