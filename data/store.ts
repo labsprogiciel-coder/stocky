@@ -31,7 +31,7 @@
  * d'un article (et inversement), pour qu'un scan reste non ambigu.
  */
 import { items as sampleItems, recent as sampleRecent, units as sampleUnits } from './mock';
-import { KEYS, clearAll, isPersistent, readJSON, writeJSON } from './storage';
+import { KEYS, clearAll, isPersistent, readJSON, readRaw, removeKey, writeJSON, writeRaw } from './storage';
 import {
   ASSIGNEE_MAX_LENGTH,
   NOTE_MAX_LENGTH,
@@ -511,15 +511,60 @@ function sampleState(prefs: Prefs): State {
 }
 
 function loadPrefs(): Prefs {
-  const rawPrefs = readJSON<unknown>(KEYS.prefs, {});
+  const rawPrefs = readData(KEYS.prefs, {});
   return {
     vibration: isRecord(rawPrefs) && typeof rawPrefs.vibration === 'boolean' ? rawPrefs.vibration : DEFAULT_PREFS.vibration,
   };
 }
 
+/**
+ * Valeurs à lire à la place du stockage pendant `loadState` : les valeurs
+ * « avant » d'un journal dont la réparation a échoué (voir `recoverJournal`).
+ */
+let _loadOverlay: Map<string, string | null> | null = null;
+
+/** Lit une clé de données pour le chargement (journal non réparé pris en compte). */
+function readData(key: string, fallback: unknown): unknown {
+  if (_loadOverlay?.has(key)) {
+    const raw = _loadOverlay.get(key) ?? null;
+    if (raw === null) return fallback;
+    try {
+      return JSON.parse(raw) as unknown;
+    } catch {
+      return fallback;
+    }
+  }
+  return readJSON<unknown>(key, fallback);
+}
+
 function loadState(): State {
+  // Enregistrement interrompu (journal présent) : réparé AVANT toute lecture.
+  // Si la réparation échoue, le journal est conservé (nouvel essai au prochain
+  // enregistrement ou lancement) et le chargement lit ses valeurs « avant »,
+  // pour que la mémoire reparte de l'état cohérent précédant l'opération.
+  // Si le journal n'a pas pu être lu ni évalué (lecture refusée), on ne sait
+  // pas si le stockage est cohérent : la mémoire chargée n'est pas fiable
+  // (`_memoryUntrusted`), rien n'est réécrit au chargement et la mémoire est
+  // rechargée depuis le stockage dès qu'une réparation aboutit (voir `save`).
+  const rec = recoverJournal();
+  if (!rec.ok) {
+    _storageInconsistent = true;
+    if (rec.journal) {
+      _loadOverlay = new Map(Object.entries(rec.journal.keys).map(([k, e]) => [k, e.before]));
+    } else {
+      _memoryUntrusted = true;
+    }
+  }
+  try {
+    return loadStateFromStorage();
+  } finally {
+    _loadOverlay = null;
+  }
+}
+
+function loadStateFromStorage(): State {
   const prefs = loadPrefs();
-  const rawItems = readJSON<unknown>(KEYS.items, null);
+  const rawItems = readData(KEYS.items, null);
   const cleanedItems = Array.isArray(rawItems) ? rawItems.map(withoutInvalidPhoto) : rawItems;
   const photoDropped = Array.isArray(rawItems) && Array.isArray(cleanedItems) && cleanedItems.some((x, i) => x !== rawItems[i]);
   const items = validList(cleanedItems, isItem);
@@ -542,7 +587,7 @@ function loadState(): State {
   // Mêmes règles qu'à l'écriture (`validateUnit`) : un numéro de série ne
   // peut pas être l'IMEI d'un autre appareil (tirets et espaces ignorés), ni le
   // code-barres ou le SKU d'un article.
-  const rawUnits = readJSON<unknown>(KEYS.units, []);
+  const rawUnits = readData(KEYS.units, []);
   const serializedIds = new Set(items.filter((i) => i.serialized).map((i) => i.id));
   const itemCodes = new Set<string>();
   for (const i of items) {
@@ -583,7 +628,7 @@ function loadState(): State {
       qtyFixed = true;
     }
   }
-  const rawMovements = readJSON<unknown>(KEYS.movements, []);
+  const rawMovements = readData(KEYS.movements, []);
   const movements = validList(rawMovements, isMovement)
     .filter((m) => itemIds.has(m.itemId))
     .sort((a, b) => b.ts - a.ts)
@@ -595,7 +640,7 @@ function loadState(): State {
   if (!Array.isArray(rawUnits) || units.length !== rawUnits.length) dirty.push('units');
 
   const sessions: Record<string, CountSession> = {};
-  const rawSessions = readJSON<unknown>(KEYS.countSessions, {});
+  const rawSessions = readData(KEYS.countSessions, {});
   if (isRecord(rawSessions)) {
     for (const v of Object.values(rawSessions)) {
       const s = toCountSession(v);
@@ -603,13 +648,15 @@ function loadState(): State {
     }
   }
 
-  const rawMeta = readJSON<unknown>(KEYS.meta, {});
+  const rawMeta = readData(KEYS.meta, {});
   const lastSavedAt = isRecord(rawMeta) && isFiniteNumber(rawMeta.lastSavedAt) ? rawMeta.lastSavedAt : undefined;
 
   const loaded: State = { items, units, movements, sessions, prefs, lastSavedAt };
   if (dirty.length > 0) {
     _state = loaded;
-    persist(...dirty);
+    // Mémoire non fiable : ne pas réécrire (le prochain enregistrement complet s'en charge).
+    if (_memoryUntrusted) _storageInconsistent = true;
+    else persist(...dirty);
   }
   return loaded;
 }
@@ -626,50 +673,231 @@ type Part = 'items' | 'units' | 'movements' | 'sessions' | 'prefs';
 const ALL_PARTS: readonly Part[] = ['items', 'units', 'movements', 'sessions', 'prefs'];
 
 /**
- * Vrai si l'annulation d'une écriture partielle n'a pas pu être réécrite : le
- * stockage peut alors différer de la mémoire. MMKV n'écrit pas plusieurs clés
- * de façon atomique ; le prochain enregistrement réécrit donc toutes les clés,
- * et l'indicateur n'est levé que si cette réécriture complète réussit.
+ * Clé de stockage de chaque partie de l'état.
  */
-let _storageInconsistent = false;
+const PART_KEYS: Record<Part, string> = {
+  items: KEYS.items,
+  units: KEYS.units,
+  movements: KEYS.movements,
+  sessions: KEYS.countSessions,
+  prefs: KEYS.prefs,
+};
 
-/** Écrit les parties demandées, sans toucher à la date ; renvoie celles écrites. */
-function writeParts(parts: readonly Part[]): Part[] {
-  const s = state();
-  const written: Part[] = [];
-  for (const p of parts) {
-    const ok =
-      p === 'items' ? writeJSON(KEYS.items, s.items)
-      : p === 'units' ? writeJSON(KEYS.units, s.units)
-      : p === 'movements' ? writeJSON(KEYS.movements, s.movements)
-      : p === 'sessions' ? writeJSON(KEYS.countSessions, s.sessions)
-      : writeJSON(KEYS.prefs, s.prefs);
-    if (ok) written.push(p);
-  }
-  return written;
+const DATA_KEYS: ReadonlySet<string> = new Set(Object.values(PART_KEYS));
+
+function partValue(s: State, p: Part): unknown {
+  return p === 'items' ? s.items
+    : p === 'units' ? s.units
+    : p === 'movements' ? s.movements
+    : p === 'sessions' ? s.sessions
+    : s.prefs;
 }
 
 /**
- * Écrit `parts` (toutes les parties si le stockage est peut-être incohérent)
- * et, si tout a été écrit, la date du dernier enregistrement. Renvoie les
- * parties effectivement écrites.
+ * Journal d'écriture (clé `KEYS.txn`). MMKV n'écrit pas plusieurs clés de
+ * façon atomique : avant d'écrire les clés de données, `save` enregistre pour
+ * chacune sa valeur brute précédente (`before`, `null` = clé absente) et la
+ * nouvelle (`after`). Le journal est supprimé une fois l'enregistrement
+ * terminé ou annulé. S'il reste présent (annulation impossible, arrêt de
+ * l'application en cours d'écriture, suppression du journal refusée), il est
+ * traité au lancement suivant, avant toute lecture, ou au début du prochain
+ * enregistrement (`recoverJournal`) :
+ * - toutes les clés valent `after` : l'enregistrement était terminé, le
+ *   journal est simplement supprimé ;
+ * - sinon chaque clé est remise à `before` (l'opération est annulée en
+ *   entier), puis le journal est supprimé.
+ * Le stockage n'est ainsi jamais laissé avec une partie seulement d'une
+ * opération (par ex. une unité sans son mouvement). Les valeurs brutes rendent
+ * la comparaison exacte ; la réparation est idempotente (une clé déjà à
+ * `before` n'est pas réécrite) et peut donc être interrompue et relancée.
  */
-function save(parts: readonly Part[]): { ok: boolean; written: Part[] } {
+type JournalEntry = { before: string | null; after: string };
+type Journal = { id: string; keys: Record<string, JournalEntry> };
+
+function parseJournal(raw: string): Journal | null {
+  try {
+    const v: unknown = JSON.parse(raw);
+    if (!isRecord(v) || typeof v.id !== 'string' || !isRecord(v.keys)) return null;
+    const keys: Record<string, JournalEntry> = {};
+    for (const [k, e] of Object.entries(v.keys)) {
+      // Seules les clés de données peuvent être restaurées.
+      if (!DATA_KEYS.has(k) || !isRecord(e)) return null;
+      if (typeof e.after !== 'string' || (e.before !== null && typeof e.before !== 'string')) return null;
+      keys[k] = { before: e.before, after: e.after };
+    }
+    return { id: v.id, keys };
+  } catch {
+    return null;
+  }
+}
+
+/** Vrai si un journal est (peut-être) présent dans le stockage : à traiter avant le prochain enregistrement. */
+let _journalPending = false;
+
+/** Remet `key` à la valeur brute `value` (`null` = clé supprimée), sauf si elle l'a déjà. */
+function restoreKey(key: string, value: string | null): boolean {
+  const cur = readRaw(key);
+  if (cur.ok && cur.value === value) return true;
+  return value === null ? removeKey(key) : writeRaw(key, value);
+}
+
+/**
+ * Traite le journal éventuellement présent (voir `Journal`). `ok` vaut `true`
+ * si le stockage est cohérent (aucun journal, enregistrement terminé ou
+ * annulé), même si la suppression du journal a échoué (`_journalPending`
+ * reste alors levé : le journal, devenu sans effet, sera supprimé ou remplacé
+ * plus tard). `ok` vaut `false` si la restauration a échoué : le journal est
+ * conservé et renvoyé dans `journal` ; `journal` vaut `null` si le journal ou
+ * une clé n'a pas pu être lu (rien n'a été décidé ni écrit). Ne lève pas.
+ */
+function recoverJournal(): { ok: true } | { ok: false; journal: Journal | null } {
+  const raw = readRaw(KEYS.txn);
+  if (!raw.ok) {
+    _journalPending = true;
+    return { ok: false, journal: null };
+  }
+  if (raw.value === null) {
+    _journalPending = false;
+    return { ok: true };
+  }
+  const journal = parseJournal(raw.value);
+  if (journal) {
+    const entries = Object.entries(journal.keys);
+    // Une lecture refusée ne permet pas de décider : on ne touche à rien (annuler
+    // un enregistrement peut-être terminé et déjà signalé comme réussi serait
+    // une perte), le journal est conservé pour un nouvel essai.
+    let completed = true;
+    for (const [k, e] of entries) {
+      const cur = readRaw(k);
+      if (!cur.ok) {
+        _journalPending = true;
+        return { ok: false, journal: null };
+      }
+      if (cur.value !== e.after) completed = false;
+    }
+    if (!completed) {
+      let restored = true;
+      for (const [k, e] of entries) if (!restoreKey(k, e.before)) restored = false;
+      if (!restored) {
+        _journalPending = true;
+        return { ok: false, journal };
+      }
+    }
+  } else {
+    console.warn('[store] Journal d\'écriture illisible, ignoré.');
+  }
+  _journalPending = !removeKey(KEYS.txn);
+  return { ok: true };
+}
+
+/**
+ * Vrai si la mémoire peut différer du stockage : écriture refusée sans retour
+ * arrière de la mémoire (`persist`), annulation impossible (journal
+ * conservé), ou journal non réparé au chargement. Le prochain enregistrement
+ * réécrit alors toutes les clés, et l'indicateur n'est baissé que si cette
+ * réécriture complète réussit.
+ */
+let _storageInconsistent = false;
+
+/**
+ * Vrai si la mémoire a été chargée sans que le journal ait pu être évalué
+ * (lecture refusée au chargement) : elle peut refléter une opération à moitié
+ * écrite. Après la première réparation réussie, la mémoire est rechargée
+ * depuis le stockage (redevenu cohérent) au lieu d'y être réécrite.
+ */
+let _memoryUntrusted = false;
+
+type SaveResult =
+  | { ok: true; written: Part[] }
+  /**
+   * `unchanged` : le stockage est resté (ou revenu) à son état précédent, sans journal en attente.
+   * `reloaded` : rien n'a été écrit, la mémoire a été rechargée depuis le stockage
+   * (voir `_memoryUntrusted`) : l'opération en cours est abandonnée.
+   */
+  | { ok: false; written: Part[]; unchanged: boolean; reloaded?: boolean };
+
+/**
+ * Écrit `parts` (toutes les parties si le stockage est peut-être incohérent)
+ * sous journal (voir `Journal`) puis, si tout a été écrit, supprime le journal
+ * et écrit la date du dernier enregistrement. Si une écriture échoue, les clés
+ * déjà écrites sont remises à leur valeur précédente ; si cette remise échoue,
+ * le journal est conservé pour réparation. Ne touche pas à la mémoire.
+ */
+function save(parts: readonly Part[]): SaveResult {
+  // Journal précédent non traité : le réparer avant d'en écrire un nouveau
+  // (sinon ses valeurs « avant » seraient perdues). Échec : on n'écrit rien.
+  if (_journalPending && !recoverJournal().ok) return { ok: false, written: [], unchanged: false };
+  if (_memoryUntrusted) {
+    // Réparation aboutie : le stockage est cohérent, la mémoire peut ne pas
+    // l'être. On la recharge (sans écrire la mémoire douteuse) et l'opération
+    // en cours échoue.
+    _memoryUntrusted = false;
+    _storageInconsistent = false;
+    _state = loadStateFromStorage();
+    return { ok: false, written: [], unchanged: true, reloaded: true };
+  }
   const full = _storageInconsistent;
   const list = full ? ALL_PARTS : parts;
-  const written = writeParts(list);
-  // N'avancer la date du dernier enregistrement que si tout a été écrit.
-  if (written.length < list.length) return { ok: false, written };
-  if (full) _storageInconsistent = false;
   const s = state();
+  const keys: Record<string, JournalEntry> = {};
+  for (const p of list) {
+    const key = PART_KEYS[p];
+    const before = readRaw(key);
+    if (!before.ok) return { ok: false, written: [], unchanged: true };
+    let after: string;
+    try {
+      after = JSON.stringify(partValue(s, p));
+    } catch (e) {
+      console.warn(`[store] Sérialisation impossible (${key}).`, e);
+      return { ok: false, written: [], unchanged: true };
+    }
+    keys[key] = { before: before.value, after };
+  }
+  // Journal refusé : rien d'autre n'est écrit (un éventuel ancien journal,
+  // déjà traité ci-dessus, reste sans effet).
+  const journal: Journal = { id: uid('t'), keys };
+  if (!writeRaw(KEYS.txn, JSON.stringify(journal))) {
+    return { ok: false, written: [], unchanged: true };
+  }
+  _journalPending = true;
+  const written: Part[] = [];
+  for (const p of list) {
+    if (!writeRaw(PART_KEYS[p], keys[PART_KEYS[p]].after)) break;
+    written.push(p);
+  }
+  if (written.length < list.length) {
+    // On remet les clés écrites et, par précaution, celle dont l'écriture a été
+    // refusée (`restoreKey` n'écrit que si sa valeur a changé).
+    let restored = true;
+    for (const p of list.slice(0, written.length + 1).reverse()) {
+      const key = PART_KEYS[p];
+      if (!restoreKey(key, keys[key].before)) restored = false;
+    }
+    if (restored) _journalPending = !removeKey(KEYS.txn);
+    return { ok: false, written, unchanged: restored };
+  }
+  // Échec de la suppression du journal sans conséquence : toutes les clés
+  // valent `after`, il sera reconnu comme terminé.
+  _journalPending = !removeKey(KEYS.txn);
+  if (full) _storageInconsistent = false;
   s.lastSavedAt = Date.now();
   writeJSON(KEYS.meta, { lastSavedAt: s.lastSavedAt });
   return { ok: true, written };
 }
 
-/** Écrit les parties demandées ; renvoie `false` si une écriture a échoué. */
+/**
+ * Écrit les parties demandées ; renvoie `false` si une écriture a échoué.
+ * La mémoire n'est PAS remise à l'état précédent (contrairement à `commit`) :
+ * le stockage, lui, est revenu à l'état d'avant l'opération (ou le sera à la
+ * réparation du journal). La mémoire en diffère donc : `_storageInconsistent`
+ * est levé et le prochain enregistrement réussi réécrit toutes les clés
+ * (stockage = mémoire). Si l'application s'arrête avant, l'opération est
+ * perdue en entier, jamais à moitié.
+ */
 function persist(...parts: Part[]): boolean {
-  return save(parts).ok;
+  const r = save(parts);
+  if (!r.ok && !r.reloaded) _storageInconsistent = true;
+  return r.ok;
 }
 
 function persistAll() {
@@ -697,18 +925,20 @@ function snapshot(): Snapshot {
 }
 
 /**
- * Écrit `parts`. En cas d'échec, rétablit l'état `snap` en mémoire et réécrit
- * les clés déjà écrites (une écriture refusée laisse l'ancienne valeur), sans
- * avancer la date du dernier enregistrement. Renvoie `null` si tout a été
- * enregistré, sinon le message d'erreur : `SAVE_ERROR` si le stockage est
- * revenu à l'état précédent, `PARTIAL_SAVE_ERROR` s'il peut différer de la
- * mémoire (voir `_storageInconsistent`). Ne lève pas.
+ * Écrit `parts`. En cas d'échec, rétablit l'état `snap` en mémoire ; `save`
+ * a remis les clés déjà écrites à leur valeur précédente, sans avancer la date
+ * du dernier enregistrement. Renvoie `null` si tout a été enregistré, sinon le
+ * message d'erreur : `SAVE_ERROR` si le stockage est revenu à l'état précédent,
+ * `PARTIAL_SAVE_ERROR` s'il peut différer de la mémoire (voir
+ * `_storageInconsistent` ; le journal conservé le ramènera à l'état précédent
+ * au prochain enregistrement ou lancement). Ne lève pas.
  */
 function commit(snap: Snapshot, ...parts: Part[]): string | null {
-  const { ok, written } = save(parts);
-  if (ok) return null;
+  const r = save(parts);
+  if (r.ok) return null;
+  if (r.reloaded) return SAVE_ERROR; // mémoire rechargée depuis le stockage : `snap` en est antérieur
   Object.assign(state(), snap);
-  if (writeParts(written).length < written.length) _storageInconsistent = true;
+  if (!r.unchanged) _storageInconsistent = true;
   return _storageInconsistent ? PARTIAL_SAVE_ERROR : SAVE_ERROR;
 }
 
@@ -1620,7 +1850,11 @@ export function setPrefs(partial: Partial<Prefs>): void {
  */
 export function resetAllData(): void {
   removeAllPhotoFiles();
-  clearAll();
+  clearAll(); // efface aussi le journal d'écriture
+  // Si l'effacement a échoué, un journal peut subsister : `save` le traite
+  // d'abord, puis réécrit toutes les clés.
+  _journalPending = true;
+  _storageInconsistent = true;
   _pendingCountScans.clear();
   _pendingPicks.clear();
   _state = blankState();

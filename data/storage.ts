@@ -24,6 +24,12 @@ export const KEYS = {
   units: `${NS}units`,
   prefs: `${NS}prefs`,
   meta: `${NS}meta`,
+  /**
+   * Journal d'écriture (voir `data/store.ts`) : présent uniquement pendant un
+   * enregistrement, ou après un enregistrement interrompu à réparer. Ajout
+   * rétrocompatible : clé absente = aucun enregistrement en cours.
+   */
+  txn: `${NS}txn`,
 } as const;
 
 /** Sous-ensemble de l'API MMKV utilisé par l'application. */
@@ -57,7 +63,12 @@ function store(): KeyValueStore {
     _store = {
       getString: (key) => mmkv.getString(key),
       set: (key, value) => mmkv.set(key, value),
-      remove: (key) => { mmkv.remove(key); },
+      // `mmkv.remove` ne lève pas en cas d'échec (il renvoie `false`, comme pour
+      // une clé déjà absente) : on vérifie que la clé a bien disparu.
+      remove: (key) => {
+        mmkv.remove(key);
+        if (mmkv.contains(key)) throw new Error(`remove failed (${key})`);
+      },
       clearAll: () => mmkv.clearAll(),
     };
     _persistent = true;
@@ -120,11 +131,38 @@ export function writeJSON(key: string, value: unknown): boolean {
   }
 }
 
-export function removeKey(key: string): void {
+/**
+ * Lit la valeur brute (chaîne stockée) d'une clé : `value` vaut `null` si la
+ * clé est absente, `ok` vaut `false` si la lecture a échoué. Ne lève jamais.
+ */
+export function readRaw(key: string): { ok: true; value: string | null } | { ok: false } {
+  try {
+    return { ok: true, value: store().getString(key) ?? null };
+  } catch (e) {
+    console.warn(`[storage] Lecture impossible (${key}).`, e);
+    return { ok: false };
+  }
+}
+
+/** Écrit une valeur brute (chaîne déjà sérialisée). Renvoie `false` si l'écriture a échoué. */
+export function writeRaw(key: string, value: string): boolean {
+  try {
+    store().set(key, value);
+    return true;
+  } catch (e) {
+    console.warn(`[storage] Écriture impossible (${key}).`, e);
+    return false;
+  }
+}
+
+/** Supprime une clé. Renvoie `false` si la suppression a échoué. Ne lève jamais. */
+export function removeKey(key: string): boolean {
   try {
     store().remove(key);
+    return true;
   } catch (e) {
     console.warn(`[storage] Suppression impossible (${key}).`, e);
+    return false;
   }
 }
 
