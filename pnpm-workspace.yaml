@@ -4,3 +4,8 @@ allowBuilds:
 # pnpm 10 equivalent.
 onlyBuiltDependencies:
   - "@sentry/cli"
+
+# React Native / Expo tooling (Babel, Metro, Gradle autolinking) resolves many
+# packages from the project root, which pnpm's default isolated node_modules
+# hides. Use a flat, npm-style node_modules instead.
+nodeLinker: hoisted
