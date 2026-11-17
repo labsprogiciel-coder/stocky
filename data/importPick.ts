@@ -98,38 +98,27 @@ export async function pickDocument(opts: { types: string[]; maxBytes: number }):
       ok: false,
       error: `Fichier trop volumineux (${Math.round(size / 1024 / 1024)} Mo, ${maxMb} Mo au maximum).`,
     });
-    // Taille signalée par le sélecteur, sinon celle de la copie (0 si illisible) ;
-    // vérifiée de toute façon sur les octets lus.
-    let size = asset.size;
-    if (size === undefined) {
+    try {
+      // Refus immédiat d'après la taille signalée par le sélecteur ou par la copie
+      // (la plus grande des deux : le fournisseur de documents peut la sous-estimer).
+      let size = typeof asset.size === 'number' ? asset.size : 0;
       try {
-        size = file.size;
+        const copied = file.size;
+        if (typeof copied === 'number' && copied > size) size = copied;
       } catch {
-        size = undefined;
+        // taille de la copie illisible : la lecture bornée ci-dessous suffit
       }
-    }
-    if (typeof size === 'number' && size > opts.maxBytes) {
-      discard();
-      return tooBig(size);
-    }
-    let bytes: Uint8Array;
-    if (typeof size === 'number' && size > 0) {
-      bytes = await file.bytes();
-      discard();
-      if (bytes.length > opts.maxBytes) return tooBig(bytes.length);
-    } else {
-      // Taille inconnue : lecture bornée à `maxBytes + 1` octets, pour refuser un
-      // fichier trop gros sans jamais le charger en entier en mémoire.
-      try {
-        bytes = await readAtMost(file.open(fs.FileMode.ReadOnly), opts.maxBytes + 1);
-      } finally {
-        discard();
-      }
+      if (size > opts.maxBytes) return tooBig(size);
+      // Lecture toujours bornée à `maxBytes + 1` octets : un fichier plus gros que
+      // signalé est refusé sans jamais être chargé en entier en mémoire.
+      const bytes = await readAtMost(file.open(fs.FileMode.ReadOnly), opts.maxBytes + 1);
       if (bytes.length > opts.maxBytes) {
         return { ok: false, error: `Fichier trop volumineux (plus de ${maxMb} Mo).` };
       }
+      return { ok: true, file: { name: asset.name ?? 'fichier', bytes } };
+    } finally {
+      discard();
     }
-    return { ok: true, file: { name: asset.name ?? 'fichier', bytes } };
   } catch (e) {
     console.warn('[import] Lecture du fichier impossible.', e);
     return { ok: false, error: "Le fichier n'a pas pu être lu. Réessayez ou enregistrez-le d'abord sur le téléphone." };
