@@ -30,6 +30,34 @@ const TYPES = [
   'application/octet-stream',
 ];
 
+/** Lit au plus `limit` octets depuis `handle` (fermé dans tous les cas). */
+async function readAtMost(handle: FileSystemModule.FileHandle, limit: number): Promise<Uint8Array> {
+  try {
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    while (total < limit) {
+      const chunk = await handle.readBytes(limit - total);
+      if (chunk.length === 0) break;
+      chunks.push(chunk);
+      total += chunk.length;
+    }
+    if (chunks.length === 1) return chunks[0];
+    const out = new Uint8Array(total);
+    let at = 0;
+    for (const c of chunks) {
+      out.set(c, at);
+      at += c.length;
+    }
+    return out;
+  } finally {
+    try {
+      handle.close();
+    } catch {
+      // ignorée
+    }
+  }
+}
+
 /** Ouvre le sélecteur de fichiers puis lit le fichier choisi (Excel ou CSV). Ne lève jamais. */
 export function pickImportFile(): Promise<PickResult> {
   return pickDocument({ types: TYPES, maxBytes: IMPORT_MAX_BYTES });
@@ -84,9 +112,23 @@ export async function pickDocument(opts: { types: string[]; maxBytes: number }):
       discard();
       return tooBig(size);
     }
-    const bytes = await file.bytes();
-    discard();
-    if (bytes.length > opts.maxBytes) return tooBig(bytes.length);
+    let bytes: Uint8Array;
+    if (typeof size === 'number' && size > 0) {
+      bytes = await file.bytes();
+      discard();
+      if (bytes.length > opts.maxBytes) return tooBig(bytes.length);
+    } else {
+      // Taille inconnue : lecture bornée à `maxBytes + 1` octets, pour refuser un
+      // fichier trop gros sans jamais le charger en entier en mémoire.
+      try {
+        bytes = await readAtMost(file.open(fs.FileMode.ReadOnly), opts.maxBytes + 1);
+      } finally {
+        discard();
+      }
+      if (bytes.length > opts.maxBytes) {
+        return { ok: false, error: `Fichier trop volumineux (plus de ${maxMb} Mo).` };
+      }
+    }
     return { ok: true, file: { name: asset.name ?? 'fichier', bytes } };
   } catch (e) {
     console.warn('[import] Lecture du fichier impossible.', e);
