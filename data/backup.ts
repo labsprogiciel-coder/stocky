@@ -56,8 +56,29 @@ export type BuiltBackup = {
   counts: { items: number; units: number; movements: number };
 };
 
-/** Crée le contenu du fichier de sauvegarde. Ne lève pas. */
-export function buildBackup(opts: { now?: Date; appVersion?: string } = {}): BuiltBackup | { ok: false; error: string } {
+/** Taille en octets de `s` encodé en UTF-8 (une paire de substitution = 4 octets, une substitution isolée = 3). */
+export function utf8ByteLength(s: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x80) n += 1;
+    else if (c < 0x800) n += 2;
+    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length && (s.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
+      n += 4;
+      i++;
+    } else n += 3;
+  }
+  return n;
+}
+
+/**
+ * Crée le contenu du fichier de sauvegarde. Refusé au-delà de `maxBytes`
+ * (par défaut `BACKUP_MAX_BYTES`, la limite de `readBackupBytes`) : un fichier
+ * qui ne pourrait pas être restauré n'est pas proposé. Ne lève pas.
+ */
+export function buildBackup(
+  opts: { now?: Date; appVersion?: string; maxBytes?: number } = {},
+): BuiltBackup | { ok: false; error: string } {
   const got = getBackupData();
   if (!got.ok) return got;
   const now = opts.now ?? new Date();
@@ -75,6 +96,15 @@ export function buildBackup(opts: { now?: Date; appVersion?: string } = {}): Bui
   } catch (e) {
     console.warn('[backup] Sérialisation impossible.', e);
     return { ok: false, error: "La sauvegarde n'a pas pu être créée. Réessayez." };
+  }
+  const maxBytes = opts.maxBytes ?? BACKUP_MAX_BYTES;
+  // Chaque unité UTF-16 donne 1 à 3 octets : calcul exact seulement si nécessaire.
+  if (json.length > maxBytes || (json.length * 3 > maxBytes && utf8ByteLength(json) > maxBytes)) {
+    const mb = (n: number) => Math.max(1, Math.round(n / 1024 / 1024));
+    return {
+      ok: false,
+      error: `Sauvegarde trop volumineuse : elle ne pourrait pas être restaurée (${mb(maxBytes)} Mo au maximum). Supprimez d'anciens mouvements ou articles inutiles, puis réessayez.`,
+    };
   }
   return {
     ok: true,

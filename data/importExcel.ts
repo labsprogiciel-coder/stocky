@@ -31,9 +31,10 @@ import { NOTE_MAX_LENGTH, foldAccents, type UnitStatus } from './units';
  * Cellule de classeur dont la valeur texte n'est pas fiable comme identifiant :
  * `imprecise` = nombre de 16 chiffres ou plus (Excel ne garde que 15 chiffres
  * significatifs : les derniers sont perdus ou inventés), `decimal` = nombre non
- * entier, `formula` = formule sans résultat enregistré.
+ * entier, `formula` = formule sans résultat enregistré, `date` = nombre au
+ * format date (converti en `jj/mm/aaaa` : le nombre d'origine n'est pas gardé).
  */
-export type CellIssue = 'imprecise' | 'decimal' | 'formula';
+export type CellIssue = 'imprecise' | 'decimal' | 'formula' | 'date';
 
 /**
  * Ligne non vide d'une feuille : `n` = numéro de ligne (comme dans Excel),
@@ -78,17 +79,26 @@ export function readImportFile(bytes: Uint8Array, fileName = ''): ImportFile {
   const { text, notice } = decodeTextInfo(bytes);
   if (text.includes('\u0000')) throw new ImportFileError("Ce fichier n'est pas un fichier CSV ou Excel lisible.");
   const delimiter = detectDelimiter(text);
-  const rows = toSheetRows(parseCsv(text, delimiter));
+  const rows = csvSheetRows(text, delimiter);
   return { kind: 'csv', delimiter, sheets: [{ name: fileName.replace(/^.*[\\/]/, '') || 'CSV', rows }], ...(notice ? { notice } : {}) };
 }
 
-function toSheetRows(records: string[][]): SheetRow[] {
+/**
+ * Lignes non vides d'un CSV, lues au fil du découpage : les lignes vides ne
+ * sont pas gardées (des millions de retours à la ligne ne créent pas des
+ * millions de tableaux), les colonnes au-delà de `MAX_COLUMNS` ne sont pas
+ * lues et la limite de lignes est vérifiée pendant la lecture. `n` = numéro
+ * d'enregistrement dans le fichier (lignes vides comprises).
+ */
+function csvSheetRows(text: string, delimiter: string): SheetRow[] {
   const out: SheetRow[] = [];
-  for (let i = 0; i < records.length; i++) {
-    const cells = records[i].slice(0, MAX_COLUMNS);
-    if (cells.some((c) => c.trim() !== '')) out.push({ n: i + 1, cells });
-    if (out.length > IMPORT_MAX_ROWS + 50) tooManyRows();
-  }
+  scanCsv(text, delimiter, MAX_COLUMNS, (cells, i) => {
+    if (cells.some((c) => c.trim() !== '')) {
+      out.push({ n: i + 1, cells });
+      if (out.length > IMPORT_MAX_ROWS + 50) tooManyRows();
+    }
+    return true;
+  });
   return out;
 }
 
@@ -234,6 +244,20 @@ export function decodeTextInfo(b: Uint8Array): { text: string; notice?: string }
  */
 export function parseCsv(text: string, delimiter: string, maxRecords = Infinity): string[][] {
   const records: string[][] = [];
+  scanCsv(text, delimiter, Infinity, (r) => {
+    records.push(r);
+    return records.length < maxRecords;
+  });
+  return records;
+}
+
+/**
+ * Découpage CSV : `onRecord(champs, index)` est appelé pour chaque
+ * enregistrement (index à partir de 0, lignes vides comprises) ; `false`
+ * arrête la lecture. Au-delà de `maxFields` champs, les suivants sont ignorés.
+ */
+function scanCsv(text: string, delimiter: string, maxFields: number, onRecord: (record: string[], index: number) => boolean): void {
+  let count = 0;
   let record: string[] = [];
   let field = '';
   let i = text.charCodeAt(0) === 0xfeff ? 1 : 0;
@@ -268,16 +292,15 @@ export function parseCsv(text: string, delimiter: string, maxRecords = Infinity)
       continue;
     }
     if (ch === d) {
-      record.push(field);
+      if (record.length < maxFields) record.push(field);
       field = '';
       fieldStart = true;
       i++;
       continue;
     }
     if (ch === '\r' || ch === '\n') {
-      record.push(field);
-      records.push(record);
-      if (records.length >= maxRecords) return records;
+      if (record.length < maxFields) record.push(field);
+      if (!onRecord(record, count++)) return;
       record = [];
       field = '';
       fieldStart = true;
@@ -296,10 +319,9 @@ export function parseCsv(text: string, delimiter: string, maxRecords = Infinity)
     i = j;
   }
   if (field !== '' || record.length > 0 || fieldStart === false) {
-    record.push(field);
-    records.push(record);
+    if (record.length < maxFields) record.push(field);
+    onRecord(record, count);
   }
-  return records;
 }
 
 /**
@@ -554,13 +576,19 @@ function readSheetRows(
       } else {
         const raw = elements(c.body, 'v')[0];
         const val = raw ? xmlText(raw.body) : '';
-        if (!raw && elements(c.body, 'f').length > 0) flag(col, 'formula');
+        // Formule sans résultat enregistré : pas de `<v>`, ou `<v/>` vide (sauf texte vide calculé).
+        if ((!raw || (val === '' && t !== 'str')) && elements(c.body, 'f').length > 0) flag(col, 'formula');
         if (t === 's') v = shared[Number(val)] ?? '';
         else if (t === 'str' || t === 'd') v = val;
         else if (t === 'b') v = val === '1' ? 'VRAI' : val === '0' ? 'FAUX' : '';
         else if (t === 'e') v = '';
-        else if (val !== '' && dates.has(Number(a.s ?? -1))) v = excelSerialToText(Number(val), date1904) ?? numberText(val);
+        else if (val !== '' && dates.has(Number(a.s ?? -1)) && excelSerialToText(Number(val), date1904) !== null) {
+          // Gardé pour une date de réception ; refusé comme identifiant.
+          v = excelSerialToText(Number(val), date1904)!;
+          flag(col, 'date');
+        }
         else {
+          // Nombre (y compris hors des dates possibles dans une cellule au format date).
           v = numberText(val);
           const num = Number(val);
           if (val !== '' && Number.isFinite(num)) {
@@ -838,7 +866,7 @@ const FORMULA_NO_VALUE =
  * - `3,56938E+14` : texte affiché par Excel pour un long nombre (CSV
  *   enregistré par Excel) ; les chiffres d'origine sont perdus.
  * - Classeur : nombre de 16 chiffres ou plus (Excel n'en garde que 15),
- *   nombre décimal, formule sans résultat.
+ *   nombre décimal, nombre au format date, formule sans résultat.
  */
 export function identifierProblem(value: string, issue?: CellIssue): string | null {
   if (issue === 'formula' && !value) return `: ${FORMULA_NO_VALUE}`;
@@ -851,6 +879,9 @@ export function identifierProblem(value: string, issue?: CellIssue): string | nu
   }
   if (issue === 'decimal') {
     return "enregistré par Excel comme un nombre décimal. Mettez la colonne au format « Texte » et ressaisissez les numéros.";
+  }
+  if (issue === 'date') {
+    return "enregistré par Excel comme une date : le numéro d'origine n'est pas gardé. Mettez la colonne au format « Texte » et ressaisissez les numéros.";
   }
   return null;
 }

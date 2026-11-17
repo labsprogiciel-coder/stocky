@@ -112,20 +112,6 @@ function secureSet(key: string, value: string): boolean {
   }
 }
 
-function readKey(key: string, valid: (v: string) => boolean = () => true): string | null {
-  const s = secureGet(key);
-  if (s !== null && valid(s)) return s;
-  let m: string | null = null;
-  try {
-    m = mmkv()?.get(key) ?? null;
-  } catch {
-    m = null;
-  }
-  if (m !== null && valid(m)) return m;
-  const mem = memory.get(key);
-  return mem !== undefined && valid(mem) ? mem : null;
-}
-
 /** Écrit dans les deux stockages (et la mémoire) ; `true` si au moins un stockage persistant a réussi. */
 function writeKey(key: string, value: string): boolean {
   memory.set(key, value);
@@ -139,12 +125,39 @@ function writeKey(key: string, value: string): boolean {
   return a || b;
 }
 
-/** Efface une clé : valeur vide écrite de façon synchrone (lue comme absente), puis suppression. */
-function removeKeyEverywhere(key: string): void {
+/** `true` si la lecture réussit et ne renvoie rien (valeur vide lue comme absente). */
+function readsEmpty(read: () => string | null): boolean {
+  try {
+    const v = read();
+    return v === null || v === '';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Efface une clé : valeur vide écrite de façon synchrone (lue comme absente),
+ * puis suppression. `true` seulement si aucune copie lisible ne subsiste.
+ */
+function removeKeyEverywhere(key: string): boolean {
   memory.delete(key);
-  secureSet(key, '');
-  try { SecureStore.deleteItemAsync(key).catch(() => {}); } catch { /* ignoré */ }
-  try { mmkv()?.remove(key); } catch { /* ignoré */ }
+  const wroteEmpty = secureSet(key, '');
+  try { SecureStore.deleteItemAsync(key).catch(() => {}); } catch { /* ignoré : la valeur vide suffit */ }
+  let mmkvGone = true;
+  const store = mmkv();
+  if (store) {
+    // MMKV 4 : `remove` ne lève pas en cas d'échec ; vérifié par relecture, valeur vide en secours.
+    try { store.remove(key); } catch { /* vérifié ci-dessous */ }
+    mmkvGone = readsEmpty(() => store.get(key));
+    if (!mmkvGone) {
+      try { store.set(key, ''); } catch { /* vérifié ci-dessous */ }
+      mmkvGone = readsEmpty(() => store.get(key));
+    }
+  }
+  // Keychain illisible : effacé seulement si la valeur vide a bien été écrite.
+  const s = secureRead(key);
+  const secureGone = s === null || s === '' || (s === undefined && wroteEmpty);
+  return secureGone && mmkvGone;
 }
 
 const nonEmpty = (v: string) => v.length > 0;
@@ -177,20 +190,46 @@ function randomBytes(n: number): Uint8Array {
 
 let _phone: string | null = null;
 
-/** Code canonique de ce téléphone (16 caractères), créé au premier appel. */
-export function getPhoneCodeCanonical(): string {
+/** Code du téléphone illisible pour le moment (voir `getPhoneCodeCanonical`). */
+const PHONE_UNREADABLE = "Le code de ce téléphone est illisible pour le moment (stockage sécurisé indisponible). Réessayez dans un instant ou relancez l'application.";
+
+/**
+ * Code canonique de ce téléphone (16 caractères), créé au premier appel.
+ * `null` si le code n'est pas lisible dans le Keychain / Keystore et que MMKV
+ * présent ne peut pas être lu (erreur de lecture) : la copie MMKV existe
+ * peut-être, le code n'est donc ni remplacé ni mis en cache ; l'appel suivant
+ * réessaie. Un SecureStore en erreur avec MMKV lisible et vide (Keystore
+ * toujours en panne sur certains Android), ou sans module MMKV (tests Node,
+ * module natif absent), est traité comme absent : nouveau code / repli en mémoire.
+ */
+export function getPhoneCodeCanonical(): string | null {
   if (_phone) return _phone;
   const valid = (v: string) => normalizePhoneCode(v) === v;
   const secureRaw = secureRead(K.phone);
   const fromSecure = secureRaw ?? null;
   let code: string | null = fromSecure !== null && valid(fromSecure) ? fromSecure : null;
   if (!code) {
+    const store = mmkv();
+    /** `undefined` : MMKV présent mais illisible. */
+    let mmkvRaw: string | null | undefined = null;
     let mmkvSaysSecure = false;
-    try { mmkvSaysSecure = mmkv()?.get(K.phoneInSecure) === '1'; } catch { mmkvSaysSecure = false; }
+    if (store) {
+      try {
+        mmkvRaw = store.get(K.phone);
+        mmkvSaysSecure = store.get(K.phoneInSecure) === '1';
+      } catch {
+        mmkvRaw = undefined;
+      }
+    }
+    if (mmkvRaw === undefined) return null;
     // iOS : Keychain lisible et vide alors que la copie MMKV dit l'y avoir écrit
     // → fichiers venus d'un autre iPhone (sauvegarde restaurée) : copie ignorée.
     const copiedFromAnotherIphone = Platform.OS === 'ios' && secureRaw === null && mmkvSaysSecure;
-    if (!copiedFromAnotherIphone) code = readKey(K.phone, valid);
+    if (!copiedFromAnotherIphone) {
+      const mem = memory.get(K.phone);
+      if (mmkvRaw && valid(mmkvRaw)) code = mmkvRaw;
+      else if (mem !== undefined && valid(mem)) code = mem;
+    }
   }
   if (!code) code = makePhoneCode(randomBytes(10));
   // Recopié partout (ex. Keychain vidé mais copie MMKV présente, ou l'inverse).
@@ -205,19 +244,29 @@ export function getPhoneCodeCanonical(): string {
   return code;
 }
 
-/** Code de ce téléphone, à envoyer au fournisseur : `7K3D-9QXA-M2PV-H8TC`. */
+/** Code de ce téléphone, à envoyer au fournisseur : `7K3D-9QXA-M2PV-H8TC` (texte d'attente si illisible). */
 export function getPhoneCode(): string {
-  return formatPhoneCode(getPhoneCodeCanonical());
+  const code = getPhoneCodeCanonical();
+  return code ? formatPhoneCode(code) : "Code indisponible, relancez l'application";
 }
 
 // ── Date de référence (anti-recul d'horloge simple) ───────────────────────
 
 let _seen: string | null | undefined;
 
+/** Date déjà vue : la plus récente des copies valides (SecureStore, MMKV, mémoire). */
+function readLastSeen(): string | null {
+  const copies: (string | null | undefined)[] = [secureGet(K.lastSeen), memory.get(K.lastSeen)];
+  try { copies.push(mmkv()?.get(K.lastSeen)); } catch { /* ignoré */ }
+  let best: string | null = null;
+  for (const v of copies) if (isIsoDate(v) && (best === null || v > best)) best = v;
+  return best;
+}
+
 /** Date du jour (`AAAA-MM-JJ`) : la plus récente entre l'horloge et la date déjà vue. */
 export function effectiveToday(now: number = Date.now()): string {
   const today = localIsoDate(now);
-  if (_seen === undefined) _seen = readKey(K.lastSeen, isIsoDate);
+  if (_seen === undefined) _seen = readLastSeen();
   if (_seen && _seen >= today) return _seen;
   _seen = today;
   writeKey(K.lastSeen, today);
@@ -257,21 +306,26 @@ export type LicenseStatus =
    */
   | { pro: false; license?: License; problem?: string };
 
-/** Codes enregistrés (SecureStore, MMKV, mémoire), sans doublon. */
-function storedCodes(): string[] {
+/** Codes enregistrés (SecureStore, MMKV, mémoire), sans doublon ; `readFailed` : un stockage n'a pas pu être lu. */
+function storedCodes(): { codes: string[]; readFailed: boolean } {
   const out: string[] = [];
+  let readFailed = false;
   const add = (v: string | null | undefined) => { if (v && nonEmpty(v) && !out.includes(v)) out.push(v); };
-  add(secureGet(K.code));
-  try { add(mmkv()?.get(K.code)); } catch { /* ignoré */ }
+  const s = secureRead(K.code);
+  if (s === undefined) readFailed = true;
+  add(s);
+  try { add(mmkv()?.get(K.code)); } catch { readFailed = true; }
   add(memory.get(K.code));
-  return out;
+  return { codes: out, readFailed };
 }
 
 let _cache: { code: string | null; day: string; status: LicenseStatus } | null = null;
 
 function computeStatus(code: string | null, day: string): LicenseStatus {
   if (!code) return { pro: false };
-  const r = verifyActivationCode(code, getPublicKey(), getPhoneCodeCanonical(), day);
+  const phone = getPhoneCodeCanonical();
+  if (!phone) return { pro: false, problem: PHONE_UNREADABLE };
+  const r = verifyActivationCode(code, getPublicKey(), phone, day);
   if (r.ok) return { pro: true, license: r.license, expiresLabel: frDate(r.license.expires) };
   return { pro: false, ...(r.license ? { license: r.license } : {}), problem: r.error };
 }
@@ -281,14 +335,16 @@ export function getLicenseStatus(now: number = Date.now()): LicenseStatus {
   const day = effectiveToday(now);
   if (_cache && _cache.day === day) return _cache.status;
   // Si les copies divergent (une écriture a échoué), la première copie valide l'emporte.
-  const candidates = storedCodes();
+  const { codes: candidates, readFailed } = storedCodes();
   let best: { code: string | null; status: LicenseStatus } = { code: null, status: { pro: false } };
   for (const code of candidates) {
     const st = computeStatus(code, day);
     if (st.pro) { best = { code, status: st }; break; }
     if (best.code === null) best = { code, status: st };
   }
-  _cache = { code: best.code, day, status: best.status };
+  // Version gratuite faute de pouvoir lire un stockage (code d'activation ou du
+  // téléphone) : non mise en cache, revérifiée au prochain appel.
+  if (best.status.pro || (!readFailed && best.status.problem !== PHONE_UNREADABLE)) _cache = { code: best.code, day, status: best.status };
   return best.status;
 }
 
@@ -309,7 +365,9 @@ export function activateLicense(code: string, now: number = Date.now()): Activat
   const compact = typeof code === 'string' ? code.replace(/\s+/g, '') : '';
   if (!compact) return { ok: false, error: "Collez le code d'activation reçu de votre fournisseur." };
   const day = effectiveToday(now);
-  const r = verifyActivationCode(compact, getPublicKey(), getPhoneCodeCanonical(), day);
+  const phone = getPhoneCodeCanonical();
+  if (!phone) return { ok: false, error: PHONE_UNREADABLE };
+  const r = verifyActivationCode(compact, getPublicKey(), phone, day);
   if (!r.ok) return { ok: false, error: r.error };
   // Gardé au moins en mémoire pour cette session si l'enregistrement échoue.
   const saved = writeKey(K.code, compact);
@@ -320,10 +378,18 @@ export function activateLicense(code: string, now: number = Date.now()): Activat
     : { ok: true, status, warning: "Stockly Pro est actif, mais le code n'a pas pu être enregistré sur ce téléphone : il faudra le recoller au prochain lancement." };
 }
 
-/** Retire la licence de ce téléphone (retour à la version gratuite, données conservées). */
-export function removeLicense(): void {
-  removeKeyEverywhere(K.code);
+export type RemoveResult = { ok: true } | { ok: false; error: string };
+
+/**
+ * Retire la licence de ce téléphone (retour à la version gratuite, données
+ * conservées). Échec si une copie lisible du code d'activation subsiste.
+ */
+export function removeLicense(): RemoveResult {
+  const removed = removeKeyEverywhere(K.code);
   _cache = null;
+  return removed
+    ? { ok: true }
+    : { ok: false, error: "La licence n'a pas pu être retirée de ce téléphone (stockage indisponible). Réessayez ; si le problème persiste, redémarrez le téléphone." };
 }
 
 /** Pour les tests : oublie les caches en mémoire (simule un redémarrage). */

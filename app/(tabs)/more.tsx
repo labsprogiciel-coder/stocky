@@ -185,7 +185,12 @@ function ProSection({ onChange, refreshKey }: { onChange: () => void; refreshKey
       'Ce téléphone repassera en version gratuite (les données sont conservées). Le même code d\'activation pourra être collé à nouveau.',
       [
         { text: 'Annuler', style: 'cancel' },
-        { text: 'Retirer', style: 'destructive', onPress: () => { removeLicense(); refresh(); onChange(); } },
+        { text: 'Retirer', style: 'destructive', onPress: () => {
+          const res = removeLicense();
+          refresh();
+          onChange();
+          if (!res.ok) Alert.alert('Licence non retirée', res.error);
+        } },
       ]
     );
   };

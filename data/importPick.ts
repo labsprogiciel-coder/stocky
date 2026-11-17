@@ -66,12 +66,27 @@ export async function pickDocument(opts: { types: string[]; maxBytes: number }):
         // ignorée
       }
     };
-    if (asset.size !== undefined && asset.size > opts.maxBytes) {
+    const tooBig = (size: number): PickResult => ({
+      ok: false,
+      error: `Fichier trop volumineux (${Math.round(size / 1024 / 1024)} Mo, ${maxMb} Mo au maximum).`,
+    });
+    // Taille signalée par le sélecteur, sinon celle de la copie (0 si illisible) ;
+    // vérifiée de toute façon sur les octets lus.
+    let size = asset.size;
+    if (size === undefined) {
+      try {
+        size = file.size;
+      } catch {
+        size = undefined;
+      }
+    }
+    if (typeof size === 'number' && size > opts.maxBytes) {
       discard();
-      return { ok: false, error: `Fichier trop volumineux (${Math.round(asset.size / 1024 / 1024)} Mo, ${maxMb} Mo au maximum).` };
+      return tooBig(size);
     }
     const bytes = await file.bytes();
     discard();
+    if (bytes.length > opts.maxBytes) return tooBig(bytes.length);
     return { ok: true, file: { name: asset.name ?? 'fichier', bytes } };
   } catch (e) {
     console.warn('[import] Lecture du fichier impossible.', e);

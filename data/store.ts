@@ -1187,23 +1187,41 @@ function isUnitCode(code: string): boolean {
   return state().units.some((u) => looseKey(u.serial) === c || (u.imei !== undefined && u.imei === imei));
 }
 
+/**
+ * Valeur numérique d'un identifiant / suffixe de SKU, ou 0 au-delà des entiers
+ * sûrs (`9007199254740992` venu d'une sauvegarde modifiée : `n + 1 === n`).
+ */
+function safeNum(digits: string): number {
+  const v = Number(digits);
+  return Number.isSafeInteger(v) ? v : 0;
+}
+
+/**
+ * Premier entier libre à partir de `start` ; si l'on dépasse les entiers sûrs,
+ * recherche reprise depuis `min` (toujours finie : `taken` ne contient qu'un
+ * nombre fini de valeurs).
+ */
+function firstFree(start: number, min: number, taken: (n: number) => boolean): number {
+  for (let n = Math.max(start, min); Number.isSafeInteger(n); n++) if (!taken(n)) return n;
+  for (let n = min; ; n++) if (!taken(n)) return n;
+}
+
 /** Prochaine référence `SKU-n` libre (et différente de `avoid`, le code-barres saisi). */
 function nextSku(avoid?: string): string {
-  let n = 1000;
+  let max = 999;
   for (const i of state().items) {
     const m = /^SKU-(\d+)$/i.exec(i.sku);
-    if (m) n = Math.max(n, Number(m[1]) + 1);
+    if (m) max = Math.max(max, safeNum(m[1]));
   }
   const avoidKey = avoid ? codeKey(avoid) : '';
-  while (isCodeTaken(`SKU-${n}`) || isUnitCode(`SKU-${n}`) || codeKey(`SKU-${n}`) === avoidKey) n++;
+  const n = firstFree(max + 1, 1000, (k) => isCodeTaken(`SKU-${k}`) || isUnitCode(`SKU-${k}`) || codeKey(`SKU-${k}`) === avoidKey);
   return `SKU-${n}`;
 }
 
 function nextItemId(): string {
   const ids = new Set(state().items.map((i) => i.id));
-  let n = state().items.reduce((max, i) => (/^\d+$/.test(i.id) ? Math.max(max, Number(i.id)) : max), 0) + 1;
-  while (ids.has(String(n))) n++;
-  return String(n);
+  const max = state().items.reduce((m, i) => (/^\d+$/.test(i.id) ? Math.max(m, safeNum(i.id)) : m), 0);
+  return String(firstFree(max + 1, 1, (k) => ids.has(String(k))));
 }
 
 /**
@@ -2187,9 +2205,9 @@ class ImportIndex implements ItemCodeLookup, UnitLookup {
     }
     this.names.set(i.id, i.name);
     this.ids.add(i.id);
-    if (/^\d+$/.test(i.id)) this.maxNumericId = Math.max(this.maxNumericId, Number(i.id));
+    if (/^\d+$/.test(i.id)) this.maxNumericId = Math.max(this.maxNumericId, safeNum(i.id));
     const m = /^SKU-(\d+)$/i.exec(i.sku);
-    if (m) this.maxSku = Math.max(this.maxSku, Number(m[1]));
+    if (m) this.maxSku = Math.max(this.maxSku, safeNum(m[1]));
   }
 
   /** Retire un article ajouté par `addItem` juste avant (ligne finalement écartée). */
@@ -2215,9 +2233,7 @@ class ImportIndex implements ItemCodeLookup, UnitLookup {
   }
 
   nextItemId(): string {
-    let n = this.maxNumericId + 1;
-    while (this.ids.has(String(n))) n++;
-    return String(n);
+    return String(firstFree(this.maxNumericId + 1, 1, (k) => this.ids.has(String(k))));
   }
 
   // ItemCodeLookup
@@ -2231,9 +2247,8 @@ class ImportIndex implements ItemCodeLookup, UnitLookup {
     return this.unitLoose.has(c) || (imei !== '' && this.unitImei.has(imei));
   }
   nextSku(avoid?: string): string {
-    let n = Math.max(1000, this.maxSku + 1);
     const avoidKey = avoid ? codeKey(avoid) : '';
-    while (this.isCodeTaken(`SKU-${n}`) || this.isUnitCode(`SKU-${n}`) || codeKey(`SKU-${n}`) === avoidKey) n++;
+    const n = firstFree(this.maxSku + 1, 1000, (k) => this.isCodeTaken(`SKU-${k}`) || this.isUnitCode(`SKU-${k}`) || codeKey(`SKU-${k}`) === avoidKey);
     return `SKU-${n}`;
   }
 

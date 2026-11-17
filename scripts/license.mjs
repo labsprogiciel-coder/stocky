@@ -20,7 +20,7 @@
  * et l'application partagent exactement le même code.
  */
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -38,12 +38,31 @@ const L = await import('../data/licenseCode.ts');
 /** Crée la clé privée dans `out` ; renvoie la clé publique. */
 export function keygen(out = DEFAULT_KEY_FILE, { force = false } = {}) {
   const path = resolve(out);
-  if (existsSync(path) && !force) {
-    throw new Error(`${path} existe déjà : utilisez --force pour l'écraser (les codes déjà émis deviendraient invalides avec la nouvelle clé publique).`);
-  }
   const seed = randomBytes(32);
+  const content = L.formatPrivateKeyFile(seed);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, L.formatPrivateKeyFile(seed), { mode: 0o600 });
+  if (!force) {
+    // Création exclusive : deux keygen simultanés ne peuvent pas s'écraser.
+    try {
+      writeFileSync(path, content, { mode: 0o600, flag: 'wx' });
+    } catch (e) {
+      if (e && e.code === 'EEXIST') {
+        throw new Error(`${path} existe déjà : utilisez --force pour l'écraser (les codes déjà émis deviendraient invalides avec la nouvelle clé publique).`);
+      }
+      throw e;
+    }
+  } else {
+    // --force : nouveau fichier temporaire créé en 0600, puis remplacement atomique
+    // (le mode d'un fichier existant, par ex. 0644, n'est pas conservé).
+    const tmp = `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+    try {
+      writeFileSync(tmp, content, { mode: 0o600, flag: 'wx' });
+      renameSync(tmp, path);
+    } catch (e) {
+      rmSync(tmp, { force: true });
+      throw e;
+    }
+  }
   return { path, publicKey: L.keyPairFromSeed(seed).publicKey };
 }
 
