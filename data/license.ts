@@ -72,25 +72,39 @@ const SECURE_OPTIONS: SecureStore.SecureStoreOptions = { keychainAccessible: Sec
 type Kv = { get(key: string): string | null; set(key: string, value: string): boolean; remove(key: string): void };
 
 const memory = new Map<string, string>();
-/** `undefined` : pas encore ouvert (ou ouverture précédente en échec, à retenter) ; `null` : module absent. */
+/** `undefined` : pas encore ouvert (ou ouverture précédente en échec, à retenter) ; `null` : module absent (Expo Go). */
 let _mmkv: Kv | null | undefined;
 
 /**
- * Instance MMKV dédiée : `null` si le module est absent (chargement de
- * `react-native-mmkv` impossible : Expo Go, tests Node), `'failed'` si le
- * module est là mais `createMMKV` lève (ouverture en échec : la copie existe
- * peut-être). Seuls le succès et l'absence sont mémorisés ; un échec
- * d'ouverture est retenté à l'appel suivant.
+ * Absence du module MMKV certaine : seulement dans Expo Go, qui ne contient
+ * pas le module natif. Dans un build de l'application, MMKV est toujours
+ * présent : un chargement en échec (initialisation Nitro qui lève…) est une
+ * panne, la copie du code existe peut-être.
+ */
+function mmkvAbsentForSure(): boolean {
+  try {
+    return (Constants as { executionEnvironment?: string }).executionEnvironment === 'storeClient';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Instance MMKV dédiée : `null` si le module est absent avec certitude
+ * (Expo Go), `'failed'` si son chargement ou `createMMKV` lève dans un build
+ * (ouverture en échec : la copie existe peut-être). Seuls le succès et
+ * l'absence certaine sont mémorisés ; un échec est retenté à l'appel suivant.
  */
 function mmkvState(): Kv | null | 'failed' {
   if (_mmkv !== undefined) return _mmkv;
-  let createMMKV: typeof MMKVModule.createMMKV;
+  let createMMKV: typeof MMKVModule.createMMKV | undefined;
   try {
     createMMKV = (require('react-native-mmkv') as typeof MMKVModule).createMMKV;
   } catch {
-    createMMKV = undefined as unknown as typeof MMKVModule.createMMKV;
+    createMMKV = undefined;
   }
   if (typeof createMMKV !== 'function') {
+    if (!mmkvAbsentForSure()) return 'failed';
     _mmkv = null;
     return null;
   }
