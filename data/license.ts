@@ -72,22 +72,45 @@ const SECURE_OPTIONS: SecureStore.SecureStoreOptions = { keychainAccessible: Sec
 type Kv = { get(key: string): string | null; set(key: string, value: string): boolean; remove(key: string): void };
 
 const memory = new Map<string, string>();
+/** `undefined` : pas encore ouvert (ou ouverture précédente en échec, à retenter) ; `null` : module absent. */
 let _mmkv: Kv | null | undefined;
 
-function mmkv(): Kv | null {
+/**
+ * Instance MMKV dédiée : `null` si le module est absent (chargement de
+ * `react-native-mmkv` impossible : Expo Go, tests Node), `'failed'` si le
+ * module est là mais `createMMKV` lève (ouverture en échec : la copie existe
+ * peut-être). Seuls le succès et l'absence sont mémorisés ; un échec
+ * d'ouverture est retenté à l'appel suivant.
+ */
+function mmkvState(): Kv | null | 'failed' {
   if (_mmkv !== undefined) return _mmkv;
+  let createMMKV: typeof MMKVModule.createMMKV;
   try {
-    const { createMMKV } = require('react-native-mmkv') as typeof MMKVModule;
+    createMMKV = (require('react-native-mmkv') as typeof MMKVModule).createMMKV;
+  } catch {
+    createMMKV = undefined as unknown as typeof MMKVModule.createMMKV;
+  }
+  if (typeof createMMKV !== 'function') {
+    _mmkv = null;
+    return null;
+  }
+  try {
     const m = createMMKV({ id: 'stockly-license' });
     _mmkv = {
       get: (k) => m.getString(k) ?? null,
       set: (k, v) => { m.set(k, v); return true; },
       remove: (k) => { m.remove(k); },
     };
+    return _mmkv;
   } catch {
-    _mmkv = null;
+    return 'failed';
   }
-  return _mmkv;
+}
+
+/** Instance MMKV, ou `null` si absente ou impossible à ouvrir pour le moment. */
+function mmkv(): Kv | null {
+  const st = mmkvState();
+  return st === 'failed' ? null : st;
 }
 
 /** Lecture SecureStore : `undefined` si le Keychain / Keystore est illisible. */
@@ -99,10 +122,6 @@ function secureRead(key: string): string | null | undefined {
   }
 }
 
-function secureGet(key: string): string | null {
-  return secureRead(key) ?? null;
-}
-
 function secureSet(key: string, value: string): boolean {
   try {
     SecureStore.setItem(key, value, SECURE_OPTIONS);
@@ -112,15 +131,20 @@ function secureSet(key: string, value: string): boolean {
   }
 }
 
-/** Écrit dans les deux stockages (et la mémoire) ; `true` si au moins un stockage persistant a réussi. */
-function writeKey(key: string, value: string): boolean {
+/**
+ * Écrit dans les deux stockages (et la mémoire) ; `true` si au moins un
+ * stockage persistant a réussi. `to` : stockages à écrire (par défaut les deux).
+ */
+function writeKey(key: string, value: string, to: { secure: boolean; mmkv: boolean } = { secure: true, mmkv: true }): boolean {
   memory.set(key, value);
-  const a = secureSet(key, value);
+  const a = to.secure && secureSet(key, value);
   let b = false;
-  try {
-    b = mmkv()?.set(key, value) ?? false;
-  } catch {
-    b = false;
+  if (to.mmkv) {
+    try {
+      b = mmkv()?.set(key, value) ?? false;
+    } catch {
+      b = false;
+    }
   }
   return a || b;
 }
@@ -143,9 +167,10 @@ function removeKeyEverywhere(key: string): boolean {
   memory.delete(key);
   const wroteEmpty = secureSet(key, '');
   try { SecureStore.deleteItemAsync(key).catch(() => {}); } catch { /* ignoré : la valeur vide suffit */ }
-  let mmkvGone = true;
-  const store = mmkv();
-  if (store) {
+  const store = mmkvState();
+  // MMKV présent mais impossible à ouvrir : la copie existe peut-être → non confirmé.
+  let mmkvGone = store !== 'failed';
+  if (store && store !== 'failed') {
     // MMKV 4 : `remove` ne lève pas en cas d'échec ; vérifié par relecture, valeur vide en secours.
     try { store.remove(key); } catch { /* vérifié ci-dessous */ }
     mmkvGone = readsEmpty(() => store.get(key));
@@ -195,50 +220,78 @@ const PHONE_UNREADABLE = "Le code de ce téléphone est illisible pour le moment
 
 /**
  * Code canonique de ce téléphone (16 caractères), créé au premier appel.
- * `null` si le code n'est pas lisible dans le Keychain / Keystore et que MMKV
- * présent ne peut pas être lu (erreur de lecture) : la copie MMKV existe
- * peut-être, le code n'est donc ni remplacé ni mis en cache ; l'appel suivant
- * réessaie. Un SecureStore en erreur avec MMKV lisible et vide (Keystore
- * toujours en panne sur certains Android), ou sans module MMKV (tests Node,
- * module natif absent), est traité comme absent : nouveau code / repli en mémoire.
+ *
+ * Un nouveau code n'est créé que si son absence est certaine : chaque
+ * stockage persistant présent (SecureStore, MMKV) a été lu sans erreur et ne
+ * contient aucun code valide. (Module MMKV absent — tests Node, Expo Go — : pas
+ * un échec de lecture ; si le Keystore est en plus illisible, code de session
+ * gardé en mémoire seulement, comme avant.)
+ * - Un stockage illisible (lecture SecureStore qui lève, ouverture ou lecture
+ *   MMKV qui lève) et aucun code valide ailleurs : `null`, rien n'est créé,
+ *   écrit ni mis en cache ; l'appel suivant réessaie. Le stockage illisible
+ *   contient peut-être le seul exemplaire du code (licence déjà émise).
+ *   Limite connue : un Keystore définitivement illisible empêche d'obtenir un
+ *   code (message « réessayez » affiché).
+ * - Code valide trouvé dans un stockage alors que l'autre est illisible : il
+ *   est utilisé, mais jamais recopié dans le stockage illisible (qui contient
+ *   peut-être un autre code).
+ * - SecureStore l'emporte sur MMKV si les deux sont lisibles et diffèrent.
  */
 export function getPhoneCodeCanonical(): string | null {
   if (_phone) return _phone;
   const valid = (v: string) => normalizePhoneCode(v) === v;
+  /** `undefined` : Keychain / Keystore illisible (une erreur n'est jamais un Keychain vide). */
   const secureRaw = secureRead(K.phone);
-  const fromSecure = secureRaw ?? null;
-  let code: string | null = fromSecure !== null && valid(fromSecure) ? fromSecure : null;
-  if (!code) {
-    const store = mmkv();
-    /** `undefined` : MMKV présent mais illisible. */
-    let mmkvRaw: string | null | undefined = null;
-    let mmkvSaysSecure = false;
-    if (store) {
-      try {
-        mmkvRaw = store.get(K.phone);
-        mmkvSaysSecure = store.get(K.phoneInSecure) === '1';
-      } catch {
-        mmkvRaw = undefined;
-      }
+  const secureOk = secureRaw !== undefined;
+  const fromSecure = secureRaw != null && valid(secureRaw) ? secureRaw : null;
+
+  const st = mmkvState();
+  const store = st === 'failed' ? null : st;
+  let mmkvOk = st !== 'failed';
+  let mmkvRaw: string | null = null;
+  let mmkvFlag: string | null = null;
+  if (store) {
+    try {
+      mmkvRaw = store.get(K.phone);
+      mmkvFlag = store.get(K.phoneInSecure);
+    } catch {
+      mmkvOk = false;
     }
-    if (mmkvRaw === undefined) return null;
-    // iOS : Keychain lisible et vide alors que la copie MMKV dit l'y avoir écrit
+  }
+
+  let code: string | null = fromSecure;
+  if (!code && mmkvOk) {
+    // iOS : Keychain LISIBLE et vide alors que la copie MMKV dit l'y avoir écrit
     // → fichiers venus d'un autre iPhone (sauvegarde restaurée) : copie ignorée.
-    const copiedFromAnotherIphone = Platform.OS === 'ios' && secureRaw === null && mmkvSaysSecure;
+    const copiedFromAnotherIphone = Platform.OS === 'ios' && secureRaw === null && mmkvFlag === '1';
     if (!copiedFromAnotherIphone) {
       const mem = memory.get(K.phone);
       if (mmkvRaw && valid(mmkvRaw)) code = mmkvRaw;
       else if (mem !== undefined && valid(mem)) code = mem;
     }
   }
-  if (!code) code = makePhoneCode(randomBytes(10));
-  // Recopié partout (ex. Keychain vidé mais copie MMKV présente, ou l'inverse).
-  const inSecure = fromSecure === code || secureSet(K.phone, code);
-  try {
-    if (mmkv()?.get(K.phone) !== code) mmkv()?.set(K.phone, code);
-    const flag = inSecure ? '1' : '0';
-    if (mmkv()?.get(K.phoneInSecure) !== flag) mmkv()?.set(K.phoneInSecure, flag);
-  } catch { /* ignoré */ }
+  if (!code) {
+    // Absence non confirmée (un stockage n'a pas pu être lu) : rien n'est créé.
+    // Exception : module MMKV absent ET Keystore illisible (tests Node, Expo Go
+    // sans Keystore) : code de session en mémoire seulement, jamais écrit dans
+    // le Keystore (voir ci-dessous).
+    if (!mmkvOk || (!secureOk && store !== null)) return null;
+    code = makePhoneCode(randomBytes(10));
+  }
+
+  // Recopié dans les stockages lus avec succès (ex. Keychain vidé mais copie
+  // MMKV présente, ou l'inverse) ; jamais dans un stockage illisible.
+  const inSecure = secureOk && (fromSecure === code || secureSet(K.phone, code));
+  if (store && mmkvOk) {
+    try {
+      if (mmkvRaw !== code) store.set(K.phone, code);
+      // Keychain illisible : on ne sait pas ce qu'il contient, l'indicateur reste tel quel.
+      if (secureOk) {
+        const flag = inSecure ? '1' : '0';
+        if (mmkvFlag !== flag) store.set(K.phoneInSecure, flag);
+      }
+    } catch { /* ignoré */ }
+  }
   memory.set(K.phone, code);
   _phone = code;
   return code;
@@ -254,22 +307,39 @@ export function getPhoneCode(): string {
 
 let _seen: string | null | undefined;
 
-/** Date déjà vue : la plus récente des copies valides (SecureStore, MMKV, mémoire). */
-function readLastSeen(): string | null {
-  const copies: (string | null | undefined)[] = [secureGet(K.lastSeen), memory.get(K.lastSeen)];
-  try { copies.push(mmkv()?.get(K.lastSeen)); } catch { /* ignoré */ }
+/**
+ * Date déjà vue : la plus récente des copies valides (SecureStore, MMKV,
+ * mémoire), et quels stockages ont pu être lus (`secure`, `mmkv`).
+ */
+function readLastSeen(): { best: string | null; secure: boolean; mmkv: boolean } {
+  const s = secureRead(K.lastSeen);
+  const copies: (string | null | undefined)[] = [s, memory.get(K.lastSeen)];
+  const st = mmkvState();
+  let mmkvOk = st !== 'failed';
+  if (st && st !== 'failed') {
+    try { copies.push(st.get(K.lastSeen)); } catch { mmkvOk = false; }
+  }
   let best: string | null = null;
   for (const v of copies) if (isIsoDate(v) && (best === null || v > best)) best = v;
-  return best;
+  return { best, secure: s !== undefined, mmkv: mmkvOk };
 }
 
 /** Date du jour (`AAAA-MM-JJ`) : la plus récente entre l'horloge et la date déjà vue. */
 export function effectiveToday(now: number = Date.now()): string {
   const today = localIsoDate(now);
-  if (_seen === undefined) _seen = readLastSeen();
+  // Stockage illisible (il contient peut-être une date plus récente) : non mis en
+  // cache, relu au prochain appel ; la mémoire garde la date de la session.
+  let readable = { secure: true, mmkv: true };
+  if (_seen === undefined) {
+    const r = readLastSeen();
+    readable = { secure: r.secure, mmkv: r.mmkv };
+    if (r.secure && r.mmkv) _seen = r.best;
+    else if (r.best && r.best >= today) return r.best;
+  }
   if (_seen && _seen >= today) return _seen;
-  _seen = today;
-  writeKey(K.lastSeen, today);
+  // Jamais écrite dans un stockage illisible (une date plus récente y serait écrasée).
+  writeKey(K.lastSeen, today, readable);
+  if (readable.secure && readable.mmkv) _seen = today;
   return today;
 }
 
@@ -314,7 +384,11 @@ function storedCodes(): { codes: string[]; readFailed: boolean } {
   const s = secureRead(K.code);
   if (s === undefined) readFailed = true;
   add(s);
-  try { add(mmkv()?.get(K.code)); } catch { readFailed = true; }
+  const st = mmkvState();
+  if (st === 'failed') readFailed = true;
+  else if (st) {
+    try { add(st.get(K.code)); } catch { readFailed = true; }
+  }
   add(memory.get(K.code));
   return { codes: out, readFailed };
 }
