@@ -1,2 +1,5 @@
 .DS_Store
 node_modules
+# Clé privée de licence Stockly Pro (scripts/license.mjs keygen) : ne jamais versionner.
+stockly-license-private.key
+*.key

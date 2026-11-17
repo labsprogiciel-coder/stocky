@@ -16,10 +16,12 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
 import { Card, Btn, Chip, Muted, Icon, Thumb, SerialBadge, TextField, Alert as InlineAlert } from './ui';
 import { colors } from '../constants/theme';
+import { ProNotice } from './ProNotice';
 import {
   UNIT_STATUSES,
   UNIT_STATUS_LABELS,
   addUnit,
+  unitLimitError,
   consumePendingPick,
   normalizeImei,
   updateUnit,
@@ -83,6 +85,10 @@ export function UnitForm({ item, unit, initialSerial, onDone, children }: UnitFo
   const [errors, setErrors] = useState<Errors>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Version gratuite : limite d'appareils atteinte (dès l'ouverture, ou au refus du store).
+  const [limitError, setLimitError] = useState<string | null>(() => (editing ? null : unitLimitError()));
+  // Limite déjà atteinte à l'ouverture : encart en haut seulement (pas de doublon près du bouton).
+  const [limitAtOpen] = useState(() => limitError !== null);
   // Appareils déjà enregistrés par « Ajouter et saisir un autre ».
   const [addedCount, setAddedCount] = useState(0);
 
@@ -134,6 +140,12 @@ export function UnitForm({ item, unit, initialSerial, onDone, children }: UnitFo
       : addUnit(item.id, { serial, imei, status, assignee: assigneeValue, note });
     if (res.error !== undefined) {
       submittingRef.current = false;
+      if ('limit' in res && res.limit === 'units') {
+        setLimitError(res.error);
+        setFormError(null);
+        setNotice(null);
+        return;
+      }
       const field = res.field;
       setErrors(field !== undefined && field !== 'id' && field !== 'itemId' ? { [field]: res.error } : {});
       setFormError(res.error);
@@ -164,6 +176,7 @@ export function UnitForm({ item, unit, initialSerial, onDone, children }: UnitFo
         keyboardShouldPersistTaps="handled"
         automaticallyAdjustKeyboardInsets
       >
+        {limitError && limitAtOpen && <ProNotice message={limitError} />}
         <Card style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
           <Thumb photo={item.photo} />
           <View style={{ flex: 1, gap: 4 }}>
@@ -248,6 +261,7 @@ export function UnitForm({ item, unit, initialSerial, onDone, children }: UnitFo
           </View>
         )}
         {formError && <InlineAlert message={formError} />}
+        {limitError && !limitAtOpen && <ProNotice message={limitError} />}
 
         <Btn title={editing ? 'Enregistrer les modifications' : "Ajouter l'appareil"} onPress={() => submit(false)} />
         {!editing && (

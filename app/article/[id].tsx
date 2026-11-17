@@ -3,8 +3,9 @@ import { View, Text, Alert, TextInput, Pressable } from 'react-native';
 import { router, useLocalSearchParams, Stack, useFocusEffect } from 'expo-router';
 import { Screen, Card, Btn, Stepper, Muted, Icon, EmptyState, ItemPhoto, Row, SerialBadge, UnitStatusChip, H2, Alert as InlineAlert } from '../../components/ui';
 import { colors } from '../../constants/theme';
-import { getItem, getUnits, adjustStock, deleteItem, fmtCount, serialKey, UNIT_STATUSES, UNIT_STATUS_LABELS, type Unit, type UnitStatus } from '../../data/store';
+import { getItem, getUnits, adjustStock, deleteItem, fmtCount, isProActive, serialKey, UNIT_STATUSES, UNIT_STATUS_LABELS, type Unit, type UnitStatus } from '../../data/store';
 import { exportAssetsCsv } from '../../data/exportCount';
+import { alertProFeature } from '../../components/ProNotice';
 
 const BARS = [2,1,1,3,1,2,2,1,3,1,1,2,1,1,3,2,1,2,1,1,3,1,2,1,1,2,3,1,1,2];
 
@@ -101,6 +102,10 @@ export default function ArticleDetail() {
 
   const handleExport = async () => {
     if (exporting) return;
+    if (!isProActive()) {
+      alertProFeature("L'export des appareils pour Jira Assets");
+      return;
+    }
     setExporting(true);
     try {
       await exportAssetsCsv(item.id);
@@ -362,7 +367,7 @@ function UnitsSection({
             </Muted>
           )}
           <Btn
-            title={exporting ? 'Export en cours…' : 'Exporter ces appareils (CSV Jira Assets)'}
+            title={exporting ? 'Export en cours…' : `Exporter ces appareils (CSV Jira Assets)${isProActive() ? '' : ' · Pro'}`}
             variant="outline"
             accessibilityLabel="Exporter les appareils de cet article au format CSV pour Jira Assets"
             disabled={exporting}

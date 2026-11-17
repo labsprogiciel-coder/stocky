@@ -22,9 +22,28 @@ Tant qu'une liste ou une carte n'a pas de contenu, l'écran affiche un état vid
 - Clés versionnées (`schemaVersion` = 1, données sous `v1.items`, `v1.units`, `v1.movements`, `v1.countSessions`, `v1.prefs`, `v1.meta`). `v1.units` (appareils suivis par numéro de série) est un ajout rétrocompatible : une installation existante sans cette clé démarre simplement sans appareil, sans changement de schéma. Les entrées invalides sont ignorées ; si les articles stockés sont absents, illisibles ou tous invalides, l'application démarre avec un inventaire vide (préférences conservées) — aucune donnée d'exemple n'est injectée. Une liste d'articles vide est valide. Les données existantes valides ne sont jamais écrasées.
 - **Écritures sur plusieurs clés** : MMKV n'écrit pas plusieurs clés de façon atomique. Chaque enregistrement écrit d'abord un journal (`v1.txn`, valeurs brutes avant/après de chaque clé), puis les clés, puis supprime le journal. Si l'application s'arrête ou si une écriture échoue en cours de route, le journal restant est traité au lancement suivant (avant toute lecture) ou au prochain enregistrement : toutes les clés à « après » → enregistrement terminé ; sinon toutes sont remises à « avant ». Le stockage ne garde donc jamais une moitié d'opération (par ex. un appareil sans son mouvement). Clé absente = aucun enregistrement en cours (ajout rétrocompatible, schéma inchangé). Si le journal ou une clé ne peut pas être lu, rien n'est décidé : le journal est conservé, rien n'est réécrit depuis la mémoire chargée, et celle-ci est rechargée depuis le stockage une fois la réparation faite.
 - MMKV est un module natif : il faut un **build de développement** (`eas build --profile development` ou `npx expo run:android`). Dans **Expo Go**, le module est absent : l'application fonctionne quand même mais avec un **stockage temporaire** en mémoire (bandeau « Stockage temporaire » sur l'accueil et dans Profil), perdu à la fermeture.
-- **Réinitialiser** : Profil › Stockage local › « Réinitialiser les données » efface tout (articles, photos, mouvements, comptages et préférences) : l'application repart vide.
+- **Réinitialiser** : Profil › Stockage local › « Réinitialiser les données » efface tout (articles, photos, mouvements, comptages et préférences) : l'application repart vide. La licence Stockly Pro est conservée. Pensez à faire une sauvegarde avant (voir « Sauvegarde et restauration »).
 - **Données d'exemple** : Profil › Stockage local › « Charger les données d'exemple » remplace, après confirmation, les articles, appareils, mouvements et comptages actuels par le jeu d'exemple de `data/mock.ts` (8 articles suivis en quantité, 3 articles suivis par numéro de série avec 7 appareils — un smartphone avec IMEI dont un en réparation, un ordinateur portable dont un attribué, un casque —, une coque suivie en quantité, et 2 mouvements) ; les préférences sont conservées.
 - **Volume** : MMKV garde tout l'état en mémoire et réécrit la liste concernée à chaque modification ; c'est adapté à quelques milliers d'appareils (et d'articles) par appareil mobile. Au-delà (dizaines de milliers de numéros de série), il faudrait passer à une base locale indexée (ex. SQLite).
+
+## Sauvegarde et restauration (gratuit)
+
+Profil › **Données**. Gratuit dans les deux versions (sécurité des données). Cas d'usage : **passer à un nouveau téléphone**, ou **copier l'inventaire d'un téléphone sur le second téléphone** de la société (chaque téléphone garde ensuite son propre inventaire : aucune fusion, aucune synchronisation).
+
+- **Sauvegarder les données** (`data/backup.ts`, `data/backupFile.ts`) : un fichier JSON `stockly-sauvegarde-<aaaammjj>-<hhmm>.json` est écrit dans le cache (les sauvegardes précédentes du cache sont supprimées) puis partagé (Drive, e-mail, WhatsApp…). Contenu :
+
+  ```json
+  { "format": "stockly-backup", "version": 1, "schemaVersion": 1,
+    "createdAt": "2026-11-16T13:05:00.000Z", "appVersion": "1.0.0",
+    "data": { "items": [], "units": [], "movements": [], "countSessions": {}, "prefs": {} } }
+  ```
+
+  Ni licence Stockly Pro ni code du téléphone (une licence est propre à un téléphone). **Les photos ne sont pas incluses** (version 1, indiqué dans l'écran) : les articles gardent le nom de leur photo, conservé à la restauration seulement si le fichier existe sur ce téléphone (restauration sur le même téléphone) ; sinon la référence est retirée (nouveau téléphone) et l'article s'affiche avec la vignette par défaut. Refusé si les données du téléphone n'ont pas pu être lues (mémoire non fiable) : la sauvegarde serait vide ou incomplète. Refusé aussi si le fichier dépasserait 50 Mo (UTF-8), la taille maximale acceptée à la restauration : un fichier qui ne pourrait pas être restauré n'est pas proposé.
+- **Restaurer une sauvegarde** : choix du fichier (expo-document-picker, tous types proposés car un `.json` reçu par WhatsApp ou Drive est souvent signalé comme `application/octet-stream`), puis vérification **sans rien modifier** :
+  - en-tête strict : `format`, `version` et `schemaVersion` entiers (une version plus récente est refusée : « Mettez l'application à jour »), date ISO ; un classeur Excel, un CSV, un JSON étranger ou un fichier tronqué sont refusés avec un message en français ;
+  - contenu validé avec **les mêmes règles qu'au chargement** (`loadStateFromStorage` appliqué aux valeurs du fichier au lieu du stockage, aucune règle dupliquée) : articles, appareils (doublons de numéro de série / d'IMEI, article inconnu…), mouvements (500 au plus), comptages, préférences. Les entrées invalides sont écartées et **signalées** ; un fichier sans aucun article valide est refusé (un inventaire vide sauvegardé reste restaurable). Le fichier pouvant avoir été modifié à la main, les **règles de la saisie** s'appliquent en plus : SKU vide ou en double remplacé par un `SKU-n` libre, code-barres déjà utilisé retiré (aucun code ambigu au scan), article sans nom renommé « Article sans nom », quantité non entière arrondie, mouvement de quantité négative ou non entière écarté ; une section du mauvais type (ex. « appareils » qui n'est pas une liste) fait refuser le fichier.
+  - Résumé affiché : date de la sauvegarde, nombre d'articles, d'appareils, de mouvements et de comptages, entrées écartées, photos absentes. En version gratuite, si la sauvegarde dépasse 50 articles ou 100 appareils, la restauration reste **permise** (ce sont les données de l'utilisateur) mais l'écran prévient que les nouvelles créations seront refusées sans Stockly Pro.
+  - Bouton **« Remplacer toutes les données de ce téléphone »**, puis confirmation. Tout est remplacé (articles, appareils, mouvements, comptages, préférences) en **un seul enregistrement sous journal** (`applyRestore`) : tout ou rien, même en cas de stockage plein ou d'arrêt de l'application pendant l'écriture (le journal remet l'état précédent au lancement suivant). Les photos que plus aucun article ne référence ne sont supprimées **qu'après** l'enregistrement réussi. Refusé si la mémoire n'est pas fiable.
 
 ## Modifier et supprimer un article
 
@@ -38,7 +57,7 @@ Tant qu'une liste ou une carte n'a pas de contenu, l'écran affiche un état vid
 - La photo est copiée dans le dossier `photos` des **documents de l'application** (`Paths.document` d'**expo-file-system**), uniquement sur l'appareil. L'article n'enregistre que le **nom du fichier** (ex. `item-12-…jpg`), jamais un chemin absolu (le chemin du conteneur iOS change entre deux mises à jour) ; l'URI est recalculé à l'affichage (`data/photos.ts`).
 - La photo s'affiche dans la liste des articles, la fiche article, l'activité récente de l'accueil et le comptage ; à défaut (aucune photo, fichier absent ou module natif indisponible), la vignette par défaut est affichée.
 - Fichiers : une photo remplacée ou retirée est supprimée après l'enregistrement ; une photo choisie puis abandonnée (Annuler, retour) est supprimée ; la suppression d'un article supprime sa photo ; « Réinitialiser les données » et « Charger les données d'exemple » suppriment toutes les photos. Au démarrage, les fichiers photo qu'aucun article ne référence (articles perdus en stockage temporaire, application fermée avant l'enregistrement du formulaire…) sont supprimés.
-- Les photos ne font pas partie de l'export CSV (colonnes inchangées).
+- Les photos ne font pas partie de l'export CSV (colonnes inchangées) ni de la sauvegarde (version 1).
 - `data/store.ts` n'importe aucun module natif de fichiers : `data/photos.ts` (importé par `app/_layout.tsx`) lui fournit ses fonctions de suppression via `setPhotoFileHooks()`. Sans elles (tests Node), la suppression des fichiers est ignorée.
 - ⚠️ Le plugin **expo-image-picker** a été ajouté à `app.json` (textes d'autorisation photos / caméra en français) : cela modifie le *fingerprint* natif, il faut donc **un nouveau build natif** (`eas build`) — une mise à jour OTA ne suffit pas. Les textes d'autorisation en français n'apparaissent que dans ce nouveau build. Dans **Expo Go**, l'ajout de photo fonctionne (avec les textes d'autorisation d'Expo Go), mais comme les articles n'y sont gardés qu'en mémoire, ils sont perdus au relancement. « Photo indisponible » ne s'affiche que si le module natif manque (ancien build sans expo-image-picker).
 
@@ -87,7 +106,7 @@ Ordre de résolution d'un code : **numéro de série / IMEI d'un appareil → co
 
 ### Export pour Jira Service Management Assets
 
-Profil › Export › « Exporter les appareils (Jira Assets) » (visible dès qu'un appareil existe) exporte tous les appareils ; la fiche d'un article suivi exporte ses seuls appareils. Le fichier `stockly-assets-<aaaammjj>-<hhmm>.csv` est écrit dans le cache puis partagé (repli : partage du texte).
+**Réservé à Stockly Pro.** Profil › Import / Export › « Exporter les appareils (Jira Assets) » (visible dès qu'un appareil existe ; en version gratuite, le bouton propose Stockly Pro) exporte tous les appareils ; la fiche d'un article suivi exporte ses seuls appareils. Le fichier `stockly-assets-<aaaammjj>-<hhmm>.csv` est écrit dans le cache puis partagé (repli : partage du texte).
 
 - Format d'import CSV d'Assets (et non Excel) : **UTF-8 sans BOM**, séparateur **virgule**, fins de ligne CRLF, guillemets RFC 4180 (`""` pour un guillemet). Un texte commençant par `=`, `+`, `@`, tabulation ou retour chariot est préfixé d'une apostrophe (le `-` est conservé : un numéro de série peut commencer par un tiret).
 - Une ligne par appareil, triée par article puis numéro de série. Colonnes :
@@ -121,11 +140,105 @@ Profil › Export › « Exporter les appareils (Jira Assets) » (visible dès q
 - Pendant un comptage cyclique, « Scanner » ouvre `/scan?countId=…` : le code lu renvoie directement sur l'article correspondant du comptage. La progression du comptage est enregistrée ; à la fin, les écarts peuvent être appliqués au stock ou ignorés.
 - **Export CSV d'un comptage** : bouton « Exporter (CSV) » sur l'écran de comptage (en cours ou terminé) et sur la carte du comptage dans Tâches › Terminées. Le fichier (`stockly-comptage-<id>-<aaaammjj>-<hhmm>.csv`) est écrit dans le cache avec **expo-file-system** puis partagé avec **expo-sharing** (repli : partage du texte si ces modules natifs sont absents). Format prévu pour Excel en français : séparateur `;`, **UTF-8 avec BOM**, fins de ligne CRLF. Il contient un en-tête (comptage, dossier, statut, dates, comptage à l'aveugle), une ligne par article (SKU, code-barres, article, dossier, stock attendu, quantité comptée, écart, statut) et les totaux. Le stock attendu est celui mémorisé à la clôture du comptage (avant ajustement) ; pour un comptage en cours, c'est le stock actuel, sauf en comptage à l'aveugle où le stock attendu et les écarts ne sont exportés qu'une fois le comptage terminé. Les SKU et codes-barres composés uniquement de chiffres sont écrits `="…"` pour qu'Excel les garde en texte (zéros de tête conservés).
 
+## Import et export Excel (Stockly Pro)
+
+La plupart des équipes suivent leur parc dans Excel : l'import reprend ce fichier tel quel, et l'export le régénère (un fichier exporté se réimporte, dans n'importe quel ordre, avec les SKU, codes-barres, seuils et prix). **Pour copier tout l'inventaire d'un téléphone vers le second téléphone de la société, ou vers un nouveau téléphone, utilisez plutôt la sauvegarde** (Profil › Données, gratuite) : elle reprend aussi les articles suivis par numéro de série sans appareil (absents des exports Excel), l'historique des mouvements et les comptages.
+
+### Importer (`app/import.tsx`, `data/importExcel.ts`, `importInventory` dans `data/store.ts`)
+
+Entrées : Profil › Import / Export › « Importer depuis Excel », et l'onglet Articles (bouton d'en-tête, et sous l'état vide).
+
+1. **Fichier** : `.xlsx` (Excel, LibreOffice, Google Sheets…) ou CSV, choisi avec **expo-document-picker** (module natif : **nouveau build EAS nécessaire**). Le format est reconnu au contenu. CSV : séparateur `;`, `,` ou tabulation détecté, BOM, guillemets, CRLF ; encodage UTF-8, UTF-16 (« Texte Unicode ») ou Windows-1252 (« CSV (séparateur : point-virgule) » d'Excel) ; un fichier mélangeant UTF-8 et Windows-1252 (ex. un caractère isolé après une modification) est lu caractère par caractère, avec un avertissement, au lieu d'être entièrement mal décodé. `.xls` (Excel 97-2003) et classeurs protégés par mot de passe : refusés avec la marche à suivre (« Enregistrer sous » .xlsx ou CSV). 20 Mo et 10 000 lignes au maximum. Formules : la dernière valeur calculée par Excel est lue (formule sans résultat enregistré dans la colonne du numéro de série, de l'IMEI ou de la quantité : ligne ignorée avec la marche à suivre). Format de cellule à zéros de tête (`000000`) : les zéros affichés par Excel sont gardés.
+2. **Feuille et ligne d'en-tête** : feuilles masquées ignorées ; la ligne d'en-tête est cherchée dans les 30 premières lignes (les lignes de titre au-dessus sont ignorées) et peut être changée (‹ ›).
+3. **Colonnes** : reconnues sans tenir compte des accents, de la casse, des espaces ni de la ponctuation ; chaque champ peut être réaffecté ou « Ignorer ». Aperçu des 3 premières lignes.
+4. **Vérifier l'import** : simulation complète (rien n'est enregistré) avec les règles de la saisie (`validateNewItem`, `validateUnit`) : articles à créer, articles existants complétés, appareils à ajouter, articles déjà présents, **lignes ignorées avec leur numéro et le motif** (numéro de série ou IMEI en double dans le fichier ou déjà enregistré, IMEI invalide, numéro de série commençant par `=`, `+` ou `@` (ou par `-` suivi d'un opérateur de formule), **numéro de série ou IMEI abîmé par Excel** (affiché en notation scientifique `3,56938E+14` dans un CSV, nombre de plus de 15 chiffres, décimal ou au format date dans un classeur : mettre la colonne au format « Texte »), nom ou numéro de série manquant, nom d'article ou catégorie de plus de 200 caractères, appareil attribué sans attributaire, quantité invalide, SKU / code-barres déjà utilisés, limite de la version gratuite…) et avertissements (statut inconnu → « En stock », date illisible ou dans le futur → date du jour, note tronquée…). Année sur 2 chiffres : 20xx, sauf au-delà de l'année prochaine (« 99 » = 1999). Possible en version gratuite.
+5. **Importer** (Stockly Pro) : tout est enregistré en **une seule opération** (journal d'écriture : tout ou rien, même en cas de stockage plein ou d'arrêt de l'application).
+
+| Champ | Noms de colonnes reconnus (exemples) |
+|---|---|
+| Article (obligatoire) | Article, Désignation, Modèle, Model, Produit, Libellé, Nom, Name |
+| Catégorie | Catégorie, Category, Famille, Type, Dossier |
+| Numéro de série | Numéro de série, N° de série, S/N, SN, Serial, Serial Number |
+| IMEI | IMEI, IMEI 1 (« IMEI 2 » est ignoré) |
+| Statut | Statut, Status, État — valeurs : En stock / Disponible / In Stock, Attribué / En service / Assigned, En réparation / SAV / Hors service / In Repair, Retiré / Réformé / Retired, Manquant / Perdu / Volé / Missing |
+| Attribué à | Attribué à, Utilisateur, Affecté à, Assigned To, Owner |
+| Date de réception | Date de réception, Reçu le, Received, Date d'achat (jj/mm/aaaa [HH:MM], aaaa-mm-jj, ou date Excel) |
+| Note | Note, Commentaire, Remarque, Observations |
+| Quantité | Quantité, Qté, Qty, Stock |
+| SKU / Référence | SKU, Référence, Réf., Code article |
+| Code-barres | Code-barres, EAN, Barcode, GTIN |
+| Seuil minimum | Seuil, Seuil minimum, Stock minimum, Min |
+| Prix | Prix, Prix unitaire, Price (« 1 500 FCFA », « 12,50 ») |
+
+Règles :
+
+- **Ligne avec numéro de série** → appareil d'un article **suivi par numéro de série**, retrouvé par son nom (casse, accents et espaces ignorés) ou créé (catégorie de la ligne, sinon « Sans catégorie »). Un article existant suivi en quantité ne reçoit pas d'appareils (ligne ignorée : activer d'abord le suivi sur sa fiche). Statut vide : « Attribué » si un attributaire est indiqué, sinon « En stock ».
+- **Ligne sans numéro de série** → **article suivi en quantité**, créé avec la quantité indiquée (0 si vide). **Si un article du même nom existe déjà, rien n'est modifié** (« existe déjà ») : réimporter le même fichier ne double pas le stock, et le stock d'un article existant ne change que par un mouvement ou un comptage tracés. Si une colonne « Numéro de série » est choisie, une ligne sans numéro de série ni quantité est ignorée (« Numéro de série manquant »).
+- Réimporter un fichier déjà importé n'ajoute rien (doublons signalés).
+- **Mouvements** : un mouvement d'entrée récapitulatif par article (quantité initiale, ou nombre d'appareils « En stock » ajoutés), et non un par appareil, pour ne pas remplacer l'historique (500 mouvements conservés) par des milliers de lignes. La date de réception de chaque appareil reprend la colonne « Date de réception ».
+- **Version gratuite** : la vérification montre les lignes qui dépasseraient 50 articles / 100 appareils ; l'import propose Stockly Pro.
+
+Exemple de feuille (une ligne de titre au-dessus est acceptée) :
+
+| Désignation | Catégorie | N° de série | IMEI | État | Utilisateur | Date de réception | Qté |
+|---|---|---|---|---|---|---|---|
+| iPhone 15 | Téléphonie | F2LX0001 | 356938035643809 | Attribué | Awa Diop | 14/03/2025 | |
+| iPhone 15 | Téléphonie | F2LX0002 | | En stock | | 15/03/2025 | |
+| Câble USB-C | Accessoires | | | | | | 25 |
+
+### Exporter (`data/devicesCsv.ts`)
+
+Profil › Import / Export : « Exporter les appareils (Excel) » (`stockly-appareils-<aaaammjj>-<hhmm>.csv` : Article, Catégorie, Numéro de série, IMEI, Statut, Attribué à, Reçu le, Modifié le, Note, puis SKU, Code-barres, Seuil et Prix de l'article) et « Exporter les articles (Excel) » (`stockly-articles-….csv`, articles suivis en quantité : Article, SKU, Code-barres, Catégorie, Quantité, Seuil, Prix). Un article suivi par numéro de série sans aucun appareil ne figure dans aucun des deux fichiers (voir la sauvegarde). Même format que l'export des comptages (`;`, UTF-8 avec BOM, CRLF, formules neutralisées, identifiants numériques `="…"`). **Deux fichiers, un tableau chacun**, plutôt qu'un fichier à deux sections : Excel ouvre un CSV comme une seule feuille, et trier ou filtrer une feuille qui contient deux tableaux mélange les lignes ; chaque fichier se trie et se filtre directement, et se réimporte tel quel.
+
+## Stockly Pro (licence hors ligne)
+
+Offre : **150 000 FCFA / an, pour 1 société et jusqu'à 2 téléphones**. Chaque téléphone garde son propre inventaire (aucun serveur, aucune synchronisation) : une licence = un code d'activation par téléphone.
+
+| | Gratuit | Pro |
+|---|---|---|
+| Articles | 50 au maximum | illimité |
+| Appareils (numéros de série) | 100 au maximum | illimité |
+| Export CSV des comptages, photos, scan, comptages… | oui | oui |
+| Export Jira Assets | — | oui |
+| Import Excel (.xlsx, CSV), export Excel des appareils et des articles | — (vérification possible) | oui |
+| Sauvegarde / restauration | oui (sécurité des données) | oui |
+
+**Limites** (`data/store.ts`, `FREE_LIMITS`) : seules les **créations** sont refusées au-delà (`createItem`, `addUnit` — formulaire, « Ajouter et saisir un autre », boucle « Ajouter des appareils » du scanner ; l'import Excel applique les mêmes limites ligne par ligne), avec un message mentionnant Stockly Pro (`limit: 'items' | 'units'` dans le résultat) et le lien « Découvrir Stockly Pro » (`components/ProNotice.tsx`). Des données au-delà des limites (licence expirée) restent lisibles, modifiables et supprimables. « Charger les données d'exemple » n'est pas limité. `getPlanUsage()` donne l'utilisation (x/50, y/100).
+
+**Profil › Stockly Pro** : statut (« Gratuit » ou « Pro jusqu'au JJ/MM/AAAA » et la société), utilisation, prix, **code du téléphone** (Copier / Partager), texte de contact (`constants/license.ts > LICENSE_CONTACT`), champ pour coller le **code d'activation** (« Coller », « Activer »), « Retirer la licence de ce téléphone ».
+
+### Fonctionnement (`data/licenseCode.ts`, `data/license.ts`)
+
+- **Code du téléphone** : 75 bits aléatoires créés une seule fois, gardés dans **expo-secure-store** (Keychain iOS « cet appareil uniquement » : jamais copié vers un autre iPhone par iCloud ou une sauvegarde) et recopiés dans une instance MMKV dédiée (`stockly-license`, non effacée par « Réinitialiser les données ») ; repli en mémoire. iOS : les fichiers MMKV font partie des sauvegardes iCloud / Finder ; une copie MMKV restaurée sur un autre iPhone (Keychain vide alors que le code y avait été écrit) est ignorée et un nouveau code est créé : la licence de l'autre iPhone ne s'y applique pas. Android : SecureStore et MMKV sont exclus de la sauvegarde automatique ; la copie MMKV sert de secours si le Keystore devient illisible. Une réinstallation ou « Effacer les données » sur Android crée un nouveau code (nouveau code d'activation à émettre). Affiché en base 32 de Crockford, par groupes de 4, avec un caractère de contrôle (Luhn mod 32) : ex. `0W3G-E1R7-0W3G-E1RS`. Saisie tolérante (minuscules, espaces, O→0, I/L→1) ; une faute de frappe est détectée.
+- **Code d'activation** : `STK1.<charge>.<signature>` en base64url ; charge = JSON `{"v":1,"c":société,"d":code téléphone,"e":"AAAA-MM-JJ","n":numéro}`, signature **Ed25519** (bibliothèque **tweetnacl**) vérifiée hors ligne avec `app.json > expo.extra.licensePublicKey`. Les retours à la ligne d'une messagerie sont ignorés au collage.
+- À chaque lancement (et à chaque changement de jour), le code enregistré est revérifié : signature, téléphone, expiration (valable jusqu'au jour `e` **inclus**). Expiré → version gratuite, données conservées.
+- **Stockage illisible** : si le code du téléphone ne peut pas être lu (Keychain / Keystore sans code valide et copie MMKV illisible), aucun nouveau code n'est créé (il remplacerait celui de la licence émise) : version gratuite pour le moment, activation refusée avec « Réessayez », nouvelle lecture à l'appel suivant (rien n'est mis en cache).
+- **Retirer la licence** : vérifié par relecture ; si une copie lisible du code d'activation subsiste (stockage en erreur), l'écran affiche « Licence non retirée » au lieu d'un faux succès.
+- **Horloge** : la date la plus récente déjà vue (toutes copies confondues) est mémorisée ; reculer l'horloge ne prolonge donc jamais une licence au-delà d'une date déjà atteinte. Limite : reculer l'horloge *avant* l'expiration et ne plus l'avancer n'est pas détectable sans serveur.
+- Clé publique absente ou encore provisoire → l'activation affiche « la clé publique de licence n'est pas configurée… ».
+
+### Émettre des licences (propriétaire, Node ≥ 22.18)
+
+`scripts/license.mjs` (non inclus dans l'application) importe directement `data/licenseCode.ts` : même code que l'application.
+
+```bash
+pnpm license:keygen                       # écrit ~/.stockly/stockly-license-private.key (ou --out chemin, ou $STOCKLY_LICENSE_KEY), affiche la clé publique
+# → coller la clé publique dans app.json > expo.extra.licensePublicKey AVANT le build, renseigner constants/license.ts > LICENSE_CONTACT
+pnpm license:issue --company "Ets Diallo" --phone 0W3G-E1R7-0W3G-E1RS --expires 2027-11-16 [--key chemin] [--serial ID]
+# → affiche le code d'activation STK1.… à envoyer au client (WhatsApp, SMS…)
+```
+
+- **Gardez la clé privée secrète et sauvegardée** (par défaut hors du projet, dans `~/.stockly/` ; `stockly-license-private.key` et `*.key` sont aussi dans `.gitignore`). Perdue, aucun nouveau code ne peut être émis pour les builds existants ; régénérée, la nouvelle clé publique invalide tous les codes existants.
+- Deux téléphones = deux codes (un par code téléphone). Un renouvellement = un nouveau code avec une nouvelle date, collé par-dessus.
+- **`licensePublicKey` doit être la vraie clé dès le premier build vendu** : `expo.extra` fait partie du *fingerprint* (`runtimeVersion`), donc une modification de `app.json` exige un **nouveau build** (une mise à jour OTA n'atteint pas les builds existants). Un build publié avec la valeur provisoire ne peut jamais activer Pro.
+- `LICENSE_CONTACT` (`constants/license.ts`) est du JavaScript : il se modifie par une mise à jour OTA (EAS Update) ou un build.
+
 ## Stack
 
 - **Expo SDK 58**, React Native 0.88, React 19, nouvelle architecture activée
 - **expo-router** (routes basées sur les fichiers, routes typées)
 - **expo-camera** pour le scan, **expo-image-picker** + **expo-file-system** pour les photos d'articles, **expo-location** pour la géolocalisation
+- **expo-document-picker** (choix du fichier à importer) et **fflate** (décompression des .xlsx, pur JavaScript)
 - **expo-updates** pour les mises à jour OTA (EAS Update, `runtimeVersion` basé sur le *fingerprint*)
 - Gestionnaire de paquets : **pnpm** (`pnpm-lock.yaml`)
 
@@ -150,17 +263,28 @@ app/
   unit/new.tsx         Ajout d'un appareil (numéro de série)
   unit/[id].tsx        Fiche d'un appareil (modification, historique, suppression)
   count/[id].tsx       Comptage cyclique (progression enregistrée, comptage par numéro de série)
+  import.tsx           Import depuis Excel / CSV (colonnes, aperçu, vérification, import)
 components/ui.tsx      Composants partagés (Btn, Stepper, Segmented, EmptyState, Thumb, ItemPhoto, TextField, SerialBadge, UnitStatusChip…)
 components/ArticleForm.tsx Formulaire d'article (création et modification, photo, suivi par numéro de série)
 components/UnitForm.tsx Formulaire d'appareil (numéro de série, IMEI, statut, attributaire, note)
 constants/theme.ts     Couleurs et thème
+constants/license.ts   Texte de contact « comment acheter Stockly Pro » (LICENSE_CONTACT, modifiable par OTA)
 data/mock.ts           Données de démonstration (chargées uniquement via « Charger les données d'exemple »)
 data/storage.ts        Accès MMKV (repli en mémoire si indisponible)
 data/store.ts          État de l'app persisté (articles, appareils, mouvements, comptages, préférences)
 data/units.ts          Appareils : types, statuts, validation du numéro de série et de l'IMEI (module pur)
 data/csv.ts            Construction du CSV d'un comptage (module pur, testable)
 data/assetsCsv.ts      Construction du CSV d'import Jira Service Management Assets (module pur)
-data/exportCount.ts    Exports CSV (comptage, appareils) : fichier + feuille de partage
+data/exportCount.ts    Exports CSV (comptage, Jira Assets, Excel) : fichier + feuille de partage
+data/devicesCsv.ts     Export Excel des appareils et des articles en quantité (module pur)
+data/importExcel.ts    Import : lecture .xlsx (fflate) et CSV, en-têtes, correspondance, lignes interprétées (module pur)
+data/importPick.ts     Choix et lecture d'un fichier (import, restauration : expo-document-picker, expo-file-system)
+data/backup.ts         Sauvegarde / restauration : création et vérification du fichier JSON (module pur)
+data/backupFile.ts     Sauvegarde / restauration : partage du fichier et choix du fichier à restaurer
+data/licenseCode.ts    Licence Pro : code téléphone, code d'activation signé Ed25519 (module pur, partagé avec le script)
+data/license.ts        Licence Pro : stockage (SecureStore + MMKV), vérification au lancement, limites gratuites
+components/ProNotice.tsx Encart / alerte « Stockly Pro » avec lien vers Profil › Stockly Pro
+scripts/license.mjs    Outil du propriétaire : keygen, issue (non inclus dans l'application)
 data/photos.ts         Photos des articles (appareil photo / galerie, fichiers locaux)
 assets/images/         Icône, icône adaptative, splash, favicon
 .eas/workflows/        Workflows EAS (CI/CD)
@@ -196,7 +320,7 @@ npx expo config --json > /dev/null   # vérification rapide
 
 ## À faire
 
-- Sauvegarde des données (aucune synchronisation serveur pour l'instant).
+- Inclure les photos dans la sauvegarde (archive ZIP, version 2 du format) ; aucune synchronisation serveur pour l'instant.
 - Remplacer les icônes provisoires de `assets/images/` par les visuels définitifs.
 - Le code-barres affiché sur la fiche détail est décoratif ; utilisez `react-native-svg` avec une bibliothèque de codes-barres pour un vrai rendu.
 - Sentry : `@sentry/react-native` et son plugin sont installés, mais le SDK n'est pas encore initialisé. Ajoutez `Sentry.init({ dsn: '…' })` dans `app/_layout.tsx`, un `metro.config.js` basé sur `getSentryExpoConfig`, et le secret `SENTRY_AUTH_TOKEN` dans EAS pour l'envoi des source maps.

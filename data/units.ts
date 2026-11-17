@@ -113,3 +113,20 @@ export function normalizeSerial(input: string): { serial: string; error?: undefi
   if (/[\u0000-\u001f\u007f]/.test(serial)) return { error: 'Le numéro de série contient des caractères invalides.' };
   return { serial };
 }
+
+/**
+ * Texte sans accents (comparaisons « insensibles aux accents » : noms
+ * d'articles et en-têtes de l'import Excel). `normalize` dépend de l'ICU du
+ * moteur JavaScript : s'il est absent ou lève, repli sur les lettres
+ * accentuées courantes du français.
+ */
+export function foldAccents(s: string): string {
+  try {
+    return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  } catch {
+    return s.replace(/[àâäáãå]/g, 'a').replace(/[ÀÂÄÁÃÅ]/g, 'A').replace(/[éèêë]/g, 'e').replace(/[ÉÈÊË]/g, 'E')
+      .replace(/[îïíì]/g, 'i').replace(/[ÎÏÍÌ]/g, 'I').replace(/[ôöóòõ]/g, 'o').replace(/[ÔÖÓÒÕ]/g, 'O')
+      .replace(/[ûüúù]/g, 'u').replace(/[ÛÜÚÙ]/g, 'U').replace(/ç/g, 'c').replace(/Ç/g, 'C').replace(/ñ/g, 'n').replace(/Ñ/g, 'N')
+      .replace(/ÿ/g, 'y').replace(/œ/g, 'oe').replace(/Œ/g, 'OE').replace(/æ/g, 'ae').replace(/Æ/g, 'AE');
+  }
+}

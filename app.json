@@ -91,6 +91,7 @@
       "typedRoutes": true
     },
     "extra": {
+      "licensePublicKey": "A_REMPLACER_par_la_cle_publique_de_scripts/license.mjs_keygen",
       "eas": {
         "projectId": "7c94c735-90d6-4252-a3c8-736389e1cd8e"
       }

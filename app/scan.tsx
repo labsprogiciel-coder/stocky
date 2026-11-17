@@ -29,6 +29,7 @@ import { CameraView, useCameraPermissions, type BarcodeType } from 'expo-camera'
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Btn, Icon, Segmented, Stepper, SerialBadge, UnitStatusChip, Alert as InlineAlert } from '../components/ui';
 import { colors } from '../constants/theme';
+import { openProSection } from '../components/ProNotice';
 import {
   UNIT_STATUS_LABELS,
   addUnit,
@@ -46,6 +47,7 @@ import {
   setCountIndex,
   setPendingCountScan,
   setPendingPick,
+  unitLimitError,
   updateUnit,
   type Item,
   type PickTarget,
@@ -83,7 +85,8 @@ function resolveCode(code: string): Match {
   return item ? { kind: 'item', item } : null;
 }
 
-type Feedback = { kind: 'ok' | 'error' | 'info'; text: string; unitId?: string };
+/** `pro` : refus par la limite de la version gratuite (lien vers Stockly Pro). */
+type Feedback = { kind: 'ok' | 'error' | 'info'; text: string; unitId?: string; pro?: boolean };
 
 export default function Scan() {
   const params = useLocalSearchParams<{ countId?: string; multi?: string; pick?: string; addItemId?: string }>();
@@ -178,7 +181,7 @@ export default function Scan() {
   const commitSerial = (target: Item, data: string) => {
     const res = addUnit(target.id, { serial: data });
     if (res.error !== undefined) {
-      setFeedback({ kind: 'error', text: res.error });
+      setFeedback({ kind: 'error', text: res.error, ...(res.limit === 'units' ? { pro: true } : {}) });
       return;
     }
     setAddedCount((n) => n + 1);
@@ -222,12 +225,19 @@ export default function Scan() {
       });
       return false;
     }
+    const known = findUnitByCode(data);
+    if (known) {
+      setFeedback({ kind: 'error', text: `Appareil déjà enregistré : ${known.serial}${getItem(known.itemId) ? ` · ${getItem(known.itemId)!.name}` : ''}` });
+      return false;
+    }
+    // Version gratuite : limite d'appareils atteinte, rien n'est proposé ni ajouté.
+    // Vérifiée après les codes déjà connus, pour que leur message reste exact.
+    const limit = unitLimitError();
+    if (limit) {
+      setFeedback({ kind: 'error', text: limit, pro: true });
+      return false;
+    }
     if (source === 'camera') {
-      const unit = findUnitByCode(data);
-      if (unit) {
-        setFeedback({ kind: 'error', text: `Appareil déjà enregistré : ${unit.serial}${getItem(unit.itemId) ? ` · ${getItem(unit.itemId)!.name}` : ''}` });
-        return false;
-      }
       setFeedback(null);
       pendingRef.current = data;
       setPendingSerial(data);
@@ -564,7 +574,7 @@ export default function Scan() {
           <SafeAreaView edges={['bottom']} style={styles.sheetBody}>
             <Text style={{ fontSize: 17, fontWeight: '600', color: colors.text }}>Saisie manuelle</Text>
             <Text style={{ fontSize: 13, color: colors.muted }}>{manualHelp}</Text>
-            {loop && feedback && <FeedbackBanner feedback={feedback} />}
+            {loop && feedback && <FeedbackBanner feedback={feedback} action={feedback.pro ? PRO_ACTION : undefined} />}
             <TextInput
               value={manualText}
               onChangeText={setManualText}
@@ -619,7 +629,13 @@ export default function Scan() {
           ) : feedback && (
             <FeedbackBanner
               feedback={feedback}
-              action={feedback.unitId ? { label: 'Compléter (IMEI, statut…)', onPress: () => router.push(`/unit/${feedback.unitId}`) } : undefined}
+              action={
+                feedback.pro
+                  ? PRO_ACTION
+                  : feedback.unitId
+                  ? { label: 'Compléter (IMEI, statut…)', onPress: () => router.push(`/unit/${feedback.unitId}`) }
+                  : undefined
+              }
             />
           )}
           <Text style={{ fontSize: 13, color: colors.text }}>
@@ -878,6 +894,8 @@ export default function Scan() {
     </View>
   );
 }
+
+const PRO_ACTION = { label: 'Découvrir Stockly Pro', onPress: openProSection };
 
 function FeedbackBanner({ feedback, action }: { feedback: Feedback; action?: { label: string; onPress: () => void } }) {
   const palette = feedback.kind === 'ok'
