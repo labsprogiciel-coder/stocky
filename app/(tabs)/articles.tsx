@@ -33,7 +33,7 @@ export default function Articles() {
     const byUnit = new Set(
       key
         ? units
-            .filter((u) => serialKey(u.serial).includes(key) || (/^\d+$/.test(digits) && u.imei !== undefined && u.imei.includes(digits)))
+            .filter((u) => serialKey(u.serial).includes(key) || (/^\d+$/.test(digits) && ((u.imei !== undefined && u.imei.includes(digits)) || (u.imei2 !== undefined && u.imei2.includes(digits)))))
             .map((u) => u.itemId)
         : []
     );

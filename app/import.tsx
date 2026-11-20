@@ -183,7 +183,7 @@ export default function ImportScreen() {
           <H2>Importer votre inventaire</H2>
           <Muted style={{ fontSize: 14, lineHeight: 20 }}>
             Fichier Excel (.xlsx) ou CSV, avec une ligne d'en-tête. Colonnes reconnues : Article (ou Désignation, Modèle),
-            Catégorie, Numéro de série, IMEI, Statut, Attribué à, Date de réception, Note, Quantité, SKU, Code-barres, Seuil.
+            Catégorie, Numéro de série, IMEI, IMEI 2, Statut, Attribué à, Date de réception, Note, Quantité, SKU, Code-barres, Seuil.
           </Muted>
           <Muted style={{ fontSize: 14, lineHeight: 20 }}>
             Une ligne avec un numéro de série ajoute un appareil ; une ligne sans numéro de série crée un article suivi en quantité.

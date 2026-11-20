@@ -6,7 +6,7 @@
  *
  * Un article « suivi par numéro de série » (`Item.serialized`) est composé
  * d'unités (`Unit`), une par appareil, identifiées par leur numéro de série
- * (et, pour un téléphone, leur IMEI). C'est le modèle de Jira Service
+ * (et, pour un téléphone, leur IMEI — deux pour un téléphone double SIM). C'est le modèle de Jira Service
  * Management Assets : un objet par appareil, clé = numéro de série.
  */
 
@@ -19,6 +19,11 @@ export type Unit = {
   serial: string;
   /** IMEI normalisé : 15 chiffres, clé de Luhn valide. */
   imei?: string;
+  /**
+   * Second IMEI (téléphone double SIM), facultatif : même format que `imei`,
+   * présent seulement si `imei` l'est, et différent de lui.
+   */
+  imei2?: string;
   status: UnitStatus;
   /** Personne à qui l'appareil est attribué (présent seulement si `status === 'assigned'`). */
   assignee?: string;
@@ -100,6 +105,11 @@ export function normalizeImei(input: string): { imei: string; error?: undefined 
   if (!luhnValid(d)) return { error: "IMEI invalide : le dernier chiffre (clé de contrôle) est incorrect. Vérifiez la saisie." };
   return { imei: d };
 }
+
+/** Message d'erreur : IMEI 2 saisi sans IMEI 1. */
+export const IMEI2_WITHOUT_IMEI = "Renseignez d'abord l'IMEI 1.";
+/** Message d'erreur : IMEI 2 identique à l'IMEI 1. */
+export const IMEI2_SAME_AS_IMEI = "L'IMEI 2 doit être différent de l'IMEI 1.";
 
 /**
  * Valide un numéro de série saisi (hors unicité). Renvoie le numéro nettoyé

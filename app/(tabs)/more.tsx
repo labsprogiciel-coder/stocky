@@ -16,6 +16,7 @@ import {
   getLicenseContact,
   getLicenseStatus,
   getPhoneCode,
+  isLicenseEnforced,
   removeLicense,
 } from '../../data/license';
 import { alertProFeature } from '../../components/ProNotice';
@@ -600,7 +601,8 @@ export default function Profile() {
           </View>
         </View>
 
-        {/* ── STOCKLY PRO ─────────────────────────────────────────────── */}
+        {/* ── STOCKLY PRO (masquée tant que le contrôle de licence est désactivé) ── */}
+        {isLicenseEnforced() && (
         <View
           style={{ gap: 14 }}
           onLayout={(e) => {
@@ -611,6 +613,7 @@ export default function Profile() {
           <SectionLabel label="STOCKLY PRO" />
           <ProSection refreshKey={dataVersion} onChange={() => { setPro(isProActive()); setInfo(getStorageInfo()); }} />
         </View>
+        )}
 
         {/* ── COMPTE ─────────────────────────────────────────────────── */}
         <SectionLabel label="COMPTE" />

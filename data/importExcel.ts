@@ -618,7 +618,7 @@ function readSheetRows(
 // ── Colonnes ───────────────────────────────────────────────────────────────
 
 export type ImportField =
-  | 'name' | 'folder' | 'serial' | 'imei' | 'status' | 'assignee' | 'qty' | 'sku' | 'barcode' | 'note' | 'received' | 'min' | 'price';
+  | 'name' | 'folder' | 'serial' | 'imei' | 'imei2' | 'status' | 'assignee' | 'qty' | 'sku' | 'barcode' | 'note' | 'received' | 'min' | 'price';
 
 /** Champs proposés à l'écran, dans l'ordre d'affichage. */
 export const IMPORT_FIELDS: readonly { key: ImportField; label: string }[] = [
@@ -626,6 +626,7 @@ export const IMPORT_FIELDS: readonly { key: ImportField; label: string }[] = [
   { key: 'folder', label: 'Catégorie' },
   { key: 'serial', label: 'Numéro de série' },
   { key: 'imei', label: 'IMEI' },
+  { key: 'imei2', label: 'IMEI 2' },
   { key: 'status', label: 'Statut' },
   { key: 'assignee', label: 'Attribué à' },
   { key: 'received', label: 'Date de réception' },
@@ -652,7 +653,9 @@ const ALIASES: Record<ImportField, readonly string[]> = {
     'numero de serie', 'n de serie', 'no de serie', 'num de serie', 'n serie', 'no serie', 'numero serie', 'serie',
     's n', 'sn', 'serial', 'serial number', 'serial no', 'serial n', 'n s', 'ns',
   ],
-  imei: ['imei', 'imei 1', 'imei1', 'numero imei', 'n imei', 'imei principal'],
+  imei: ['imei', 'imei 1', 'imei1', 'numero imei', 'n imei', 'imei principal', 'imei sim 1', 'sim 1 imei', 'imei 1 sim', 'first imei', '1st imei', 'premier imei'],
+  // Second IMEI (double SIM) : « IMEI 2 », « IMEI2 », « IMEI-2 », « Second IMEI », « IMEI SIM 2 »…
+  imei2: ['imei 2', 'imei2', 'second imei', 'imei sim 2', 'imei secondaire', 'imei 2 sim', 'sim 2 imei', '2nd imei', 'deuxieme imei'],
   status: ['statut', 'status', 'etat', 'state', 'situation'],
   assignee: [
     'attribue a', 'attribuee a', 'utilisateur', 'assigned to', 'assignee', 'owner', 'affecte a', 'affectee a', 'attributaire',
@@ -933,9 +936,11 @@ export function buildRecords(
     if (serial) rec.serial = serial;
     const imei = get('imei');
     if (imei) rec.imei = imei;
+    const imei2 = get('imei2');
+    if (imei2) rec.imei2 = imei2;
     // Identifiants abîmés par Excel : refusés (sinon un faux numéro serait
     // enregistré et les vrais appareils écartés comme doublons).
-    for (const [f, label, value] of [['serial', 'Numéro de série', serial], ['imei', 'IMEI', imei]] as const) {
+    for (const [f, label, value] of [['serial', 'Numéro de série', serial], ['imei', 'IMEI', imei], ['imei2', 'IMEI 2', imei2]] as const) {
       const why = identifierProblem(value, issue(f));
       if (why) fail(`${label} ${value ? `« ${value} » ` : ''}${why}`);
     }

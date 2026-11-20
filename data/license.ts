@@ -34,7 +34,7 @@
 import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
-import { LICENSE_CONTACT } from '../constants/license';
+import { LICENSE_CONTACT, LICENSE_ENFORCED } from '../constants/license';
 import type * as MMKVModule from 'react-native-mmkv';
 import {
   PUBLIC_KEY_PLACEHOLDER,
@@ -480,6 +480,18 @@ export function removeLicense(): RemoveResult {
     : { ok: false, error: "La licence n'a pas pu être retirée de ce téléphone (stockage indisponible). Réessayez ; si le problème persiste, redémarrez le téléphone." };
 }
 
+let _enforced: boolean = LICENSE_ENFORCED;
+
+/** Contrôle de licence actif (`constants/license.ts > LICENSE_ENFORCED`). */
+export function isLicenseEnforced(): boolean {
+  return _enforced;
+}
+
+/** Pour les tests : force le contrôle de licence (actif ou non). */
+export function _setLicenseEnforcedForTests(on: boolean): void {
+  _enforced = on;
+}
+
 /** Pour les tests : oublie les caches en mémoire (simule un redémarrage). */
 export function _resetLicenseCacheForTests(): void {
   _cache = null;
@@ -489,4 +501,5 @@ export function _resetLicenseCacheForTests(): void {
   memory.clear();
 }
 
-setLicenseCheck(isPro);
+// Contrôle désactivé (`LICENSE_ENFORCED = false`) : tout est ouvert, comme en Pro.
+setLicenseCheck(() => !_enforced || isPro());
