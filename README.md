@@ -206,6 +206,8 @@ Profil › Import / Export : « Exporter les appareils (Excel) » (`stockly-appa
 
 ## Stockly Pro (licence hors ligne)
 
+> **Contrôle de licence actuellement désactivé** (`constants/license.ts > LICENSE_ENFORCED = false`) : tous les téléphones fonctionnent comme en Pro (aucune limite, imports / exports ouverts, aucune invitation « Découvrir Stockly Pro ») et la section « Stockly Pro » de Profil est masquée. Le mécanisme décrit ci-dessous reste en place : passez la constante à `true` pour le réactiver (mise à jour OTA suffisante). Une licence déjà activée sur un téléphone reste enregistrée et redevient effective à la réactivation.
+
 Offre : **150 000 FCFA / an, pour 1 société et jusqu'à 2 téléphones**. Chaque téléphone garde son propre inventaire (aucun serveur, aucune synchronisation) : une licence = un code d'activation par téléphone.
 
 | | Gratuit | Pro |
