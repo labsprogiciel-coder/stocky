@@ -273,6 +273,7 @@ function UnitsSection({
 }) {
   const addUnit = () => router.push({ pathname: '/unit/new', params: { itemId } });
   const scan = () => router.push({ pathname: '/scan', params: { addItemId: itemId } });
+  const scanBox = () => router.push({ pathname: '/scan', params: { box: '1', addItemId: itemId } });
   const countsByStatus = UNIT_STATUSES.map((s) => ({ s, n: units.filter((u) => u.status === s).length })).filter((c) => c.n > 0);
   const shown = visibleUnits.slice(0, MAX_VISIBLE_UNITS);
 
@@ -308,6 +309,12 @@ function UnitsSection({
         </Muted>
         <Btn title="Ajouter un appareil" accessibilityHint="Ouvre le formulaire d'ajout d'un numéro de série" onPress={addUnit} />
         <Btn title="Scanner des appareils" variant="outline" accessibilityHint="Ouvre le scanner pour ajouter des appareils à la suite" onPress={scan} />
+        <Btn
+          title="Scanner une boîte"
+          variant="outline"
+          accessibilityHint="Lit tous les codes de l'étiquette de la boîte (numéro de série, IMEI 1 et 2, code produit) pour ajouter l'appareil en une fois"
+          onPress={scanBox}
+        />
       </Card>
 
       <H2>Appareils</H2>

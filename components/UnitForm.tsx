@@ -69,19 +69,23 @@ export type UnitFormProps = {
   unit?: Unit;
   /** Ajout : numéro de série prérempli (code scanné). */
   initialSerial?: string;
+  /** Ajout : IMEI prérempli (« Scanner une boîte »). */
+  initialImei?: string;
+  /** Ajout : note préremplie (« Scanner une boîte » : IMEI 2). */
+  initialNote?: string;
   /** Appelé après un enregistrement réussi, ou sur « Annuler ». */
   onDone: () => void;
   /** Contenu affiché sous les boutons (historique, suppression…). */
   children?: React.ReactNode;
 };
 
-export function UnitForm({ item, unit, initialSerial, onDone, children }: UnitFormProps) {
+export function UnitForm({ item, unit, initialSerial, initialImei, initialNote, onDone, children }: UnitFormProps) {
   const editing = unit !== undefined;
   const [serial, setSerial] = useState(unit?.serial ?? initialSerial ?? '');
-  const [imei, setImei] = useState(unit?.imei ?? '');
+  const [imei, setImei] = useState(unit?.imei ?? initialImei ?? '');
   const [status, setStatus] = useState<UnitStatus>(unit?.status ?? 'in_stock');
   const [assignee, setAssignee] = useState(unit?.assignee ?? '');
-  const [note, setNote] = useState(unit?.note ?? '');
+  const [note, setNote] = useState(unit?.note ?? initialNote ?? '');
   const [errors, setErrors] = useState<Errors>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
