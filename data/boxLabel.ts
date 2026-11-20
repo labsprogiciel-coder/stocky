@@ -719,21 +719,6 @@ export function boxListFields(a: BoxAnalysis): BoxField[] {
 
 // ── Session (écran « Scanner une boîte ») ─────────────────────────────────
 
-/**
- * Empreinte courte et non réversible d'un code refusé (FNV-1a 32 bits +
- * longueur) : permet de n'afficher le refus qu'une fois par code sans garder
- * son contenu en mémoire (un QR Wi-Fi contient le mot de passe).
- */
-export function boxRejectDigest(data: string): string {
-  let h = 0x811c9dc5;
-  const s = typeof data === 'string' ? data : '';
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 0x01000193) >>> 0;
-  }
-  return `${s.length.toString(36)}:${h.toString(36)}`;
-}
-
 /** Délai pendant lequel les codes de la boîte précédente, encore visibles, sont ignorés. */
 export const BOX_SUPPRESS_GAP_MS = 1200;
 

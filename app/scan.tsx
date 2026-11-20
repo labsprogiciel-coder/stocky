@@ -42,7 +42,6 @@ import {
   boxActiveKeys,
   boxAddCode,
   boxCheckCode,
-  boxRejectDigest,
   boxChooseSerial,
   boxCodeKey,
   boxFieldChip,
@@ -163,9 +162,9 @@ export default function Scan() {
   // Retour de « Scanner une boîte » vers la boucle d'ajout : clés (`boxCodeKey`) des
   // codes de la boîte, encore visibles ou récemment ignorés, à ne pas reproposer.
   const loopBoxKeysRef = useRef<Set<string>>(new Set());
-  // « Scanner une boîte » : codes caméra déjà écartés (QR Wi-Fi, code trop long),
-  // message affiché une seule fois par code pour ne pas masquer les autres.
-  const boxRejectedRef = useRef<Set<string>>(new Set());
+  // « Scanner une boîte » : dernier affichage du message de refus (QR Wi-Fi / contact, code trop long) :
+  // rien du contenu refusé n'est gardé, seule l'heure sert à ne pas répéter le message.
+  const boxRejectedAtRef = useRef(0);
   // Hors boucle : code qui vient d'être traité, ignoré tant qu'il reste visible.
   const suppressRef = useRef<{ code: string; lastSeen: number } | null>(null);
   // Écran recouvert (fiche appareil, autre scanner…) : caméra démontée, aucune lecture.
@@ -463,7 +462,7 @@ export default function Scan() {
     unlockTimerRef.current = null;
     loopSeenRef.current = new Set();
     loopBoxKeysRef.current = new Set();
-    boxRejectedRef.current = new Set();
+    boxRejectedAtRef.current = 0;
     pendingRef.current = null;
     setPendingSerial(null);
     setAddTargetId(null);
@@ -483,7 +482,7 @@ export default function Scan() {
 
   const finishBox = () => {
     const back = boxReturnAddId;
-    boxRejectedRef.current = new Set();
+    boxRejectedAtRef.current = 0;
     if (back) {
       // Retour à la boucle « Ajouter des appareils » : les codes de cette boîte
       // (liste en cours et codes de la boîte précédente encore ignorés après un
@@ -524,11 +523,10 @@ export default function Scan() {
           return;
         }
         // Caméra : une seule fois par code, et sans remplacer un message d'ajout ou d'erreur.
-        // Empreinte seulement (le contenu, ex. mot de passe Wi-Fi, n'est pas gardé).
-        const digest = boxRejectDigest(data);
-        if (boxRejectedRef.current.has(digest)) return;
-        if (boxRejectedRef.current.size >= 50) boxRejectedRef.current = new Set();
-        boxRejectedRef.current.add(digest);
+        // Message au plus toutes les 3 s : aucune trace du contenu (ex. mot de passe Wi-Fi).
+        const now = Date.now();
+        if (now - boxRejectedAtRef.current < 3000) return;
+        boxRejectedAtRef.current = now;
         setFeedback((f) => (f && f.kind !== 'info' ? f : { kind: 'info', text: rejected }));
         return;
       }
