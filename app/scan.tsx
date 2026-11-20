@@ -564,7 +564,7 @@ export default function Scan() {
       // un numéro de série ; écarté sans être proposé (ni affiché).
       if (addLoop && boxCheckCode(data) !== null) return;
       // Codes de la boîte tout juste terminée (même clé que « Scanner une boîte »).
-      if (loop && loopBoxKeysRef.current.size > 0 && loopBoxKeysRef.current.has(boxCodeKey(normalizeBoxText(data)))) return;
+      if (loop && loopBoxKeysRef.current.size > 0 && loopBoxKeysRef.current.has(boxCodeKey(normalizeBoxText(data), symbology))) return;
       // Hors boucle : le code tout juste traité, encore dans le champ, est ignoré.
       const sup = suppressRef.current;
       if (!loop && sup && sup.code === data) {

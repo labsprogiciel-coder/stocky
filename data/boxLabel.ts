@@ -135,17 +135,20 @@ export function gtinValid(digits: string): boolean {
 }
 
 /**
- * Clé de dédoublonnage d'un code lu. Espaces et tirets ne sont ignorés que
- * pour un IMEI (15 chiffres, clé de Luhn) ou un code produit (8/12/13/14
- * chiffres, clé GTIN ; EAN-13 commençant par 0 = UPC-A) ; sinon `serialKey`
- * (« 123-456 » et « 123456 » restent deux numéros de série distincts).
+ * Clé de dédoublonnage d'un code lu : `serialKey` (espaces retirés,
+ * majuscules ; tirets gardés). Seule exception, avec la symbologie lue par la
+ * caméra (`type`) : un EAN-13 commençant par 0 = l'UPC-A correspondant.
  */
-export function boxCodeKey(data: string): string {
+export function boxCodeKey(data: string, type?: string): string {
   const t = typeof data === 'string' ? data.trim() : '';
-  const d = imeiDigits(t);
-  if (/^\d{15}$/.test(d) && luhnValid(d)) return d;
-  if (gtinValid(d)) return /^0\d{12}$/.test(d) ? d.slice(1) : d;
-  return serialKey(t);
+  // Même clé que les numéros de série du store (espaces retirés, majuscules) :
+  // les tirets sont gardés, « 1234-5670 » et « 12345670 » restent distincts
+  // même si leurs chiffres forment un GTIN valide.
+  const k = serialKey(t);
+  // Seule équivalence par les chiffres, sur preuve du type : un UPC-A lu comme
+  // EAN-13 (zéro de tête, iOS) est le même code que sa lecture UPC-A (Android).
+  if (type && PRODUCT_SYMBOLOGY.test(type) && /^0\d{12}$/.test(k) && gtinValid(k)) return k.slice(1);
+  return k;
 }
 
 const ctrlRe = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
@@ -743,7 +746,7 @@ export function boxAddCode(s: BoxSession, code: ScannedCode, now: number = Date.
   if (!code || typeof code.data !== 'string' || boxCheckCode(code.data) !== null) return s;
   const data = normalizeBoxText(code.data).trim();
   if (!data) return s;
-  const k = boxCodeKey(data);
+  const k = boxCodeKey(data, typeof code.type === 'string' ? code.type : undefined);
   if (!k || s.keys.includes(k)) return s;
   const last = s.ignore[k];
   if (last !== undefined) {
