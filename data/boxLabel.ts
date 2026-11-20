@@ -103,14 +103,15 @@ export type VendorPattern = {
  * Pour ajouter un fabricant : une ligne ici, et un cas dans les tests.
  */
 export const VENDOR_PATTERNS: readonly VendorPattern[] = [
-  // Samsung (téléphones, tablettes) : 11 caractères commençant par « R » + chiffre (ex. R58W1A2B3CD).
-  // À vérifier sur étiquettes réelles.
+  // Samsung (téléphones, tablettes) : 11 caractères commençant par « R » + chiffre.
+  // Vérifié sur une étiquette réelle (Galaxy A07 SM-A075F/DS : R8YL615HTHV).
   { id: 'samsung', label: 'Samsung', re: /^R\d[A-Z0-9]{9}$/, confidence: 'medium' },
   // Dell « Service Tag » : 7 caractères alphanumériques. À vérifier sur étiquettes réelles.
   { id: 'dell', label: 'Dell (Service Tag)', re: /^(?=.*\d)(?=.*[A-Z])[A-Z0-9]{7}$/, confidence: 'low' },
   // HP : 10 caractères, lettres puis chiffres en tête (ex. 5CD1234XYZ, CND1234ABC). À vérifier sur étiquettes réelles.
   { id: 'hp', label: 'HP', re: /^(?:\d[A-Z]{2}|[A-Z]{3})\d{4}[A-Z0-9]{3}$/, confidence: 'low' },
-  // Apple : 10 à 12 caractères alphanumériques (anciens 11-12, récents 10 aléatoires). À vérifier sur étiquettes réelles.
+  // Apple : 10 à 12 caractères alphanumériques (anciens 11-12, récents 10 aléatoires).
+  // Vérifié sur une étiquette réelle (MacBook Neo : JY9NWR1129, 10 caractères).
   { id: 'apple', label: 'Apple', re: /^(?=.*\d)(?=.*[A-Z])[A-Z0-9]{10,12}$/, confidence: 'low' },
 ];
 
@@ -390,6 +391,11 @@ function scoreSerial(value: string, key: string | undefined, symbology: string |
   let score = 50;
   const notes: string[] = [];
   const explicit = key === 'SN';
+  // Adresse MAC sans séparateurs (Apple : codes « Wi-Fi ID » / « Bluetooth ID » de la boîte).
+  if (!explicit && /^[0-9A-F]{12}$/i.test(value) && /[A-F]/i.test(value) && /\d/.test(value)) {
+    score -= 45;
+    notes.push('ressemble à une adresse MAC (Wi-Fi / Bluetooth)');
+  }
   if (explicit) {
     score += 40;
     notes.push('clé « S/N »');
@@ -451,8 +457,10 @@ function scoreSerial(value: string, key: string | undefined, symbology: string |
 }
 
 // Apple (convention ANSI MH10.8.2) : le Code 128 du numéro de série commence
-// par l'identifiant « S » (« (S) Serial No. » imprimé à côté). INCERTAIN : le
-// « S » peut aussi faire partie du numéro. Les deux variantes sont proposées.
+// par l'identifiant « S » (« (S) Serial No. » imprimé à côté). Vérifié sur une
+// étiquette réelle (MacBook Neo : « (S) Serial No. JY9NWR1129 ») : le numéro
+// est la valeur SANS le « S », proposée en premier. La variante avec « S »
+// reste dans la liste (au cas où le « S » ferait partie du numéro).
 const S_PREFIXED = /^S(?=[A-Z0-9]*\d)(?=[A-Z0-9]*[A-Z])[A-Z0-9]{10,12}$/;
 
 /** Analyse brute (sans le choix de l'utilisateur). */
@@ -527,10 +535,11 @@ function buildFields(codes: readonly ScannedCode[], itemName?: (code: string) =>
         const stripped = value.slice(1);
         const s = scoreSerial(stripped, undefined, symbology, lookup(stripped));
         const sWith = scoreSerial(value, undefined, symbology, name);
-        // Avec « S » légèrement devant (incertain) ; les deux restent proposés.
-        const withScore = Math.max(sWith.score, s.score + 2);
-        fields.push({ ...base, value, role: withScore >= SERIAL_MIN_SCORE ? 'serial-candidate' : 'other', score: withScore, reason: `${sWith.reason} (commence par « S » : identifiant Apple possible)` });
-        fields.push({ ...base, id: `${id}s`, value: stripped, role: s.score >= SERIAL_MIN_SCORE ? 'serial-candidate' : 'other', score: s.score, reason: `${s.reason} (sans le « S » initial)` });
+        // Sans « S » devant (identifiant « (S) Serial No. ») ; avec « S » juste derrière.
+        const strippedScore = s.score > 0 ? Math.max(s.score, sWith.score) + 2 : 0;
+        const withScore = Math.min(sWith.score, Math.max(0, strippedScore - 2));
+        fields.push({ ...base, value, role: withScore >= SERIAL_MIN_SCORE ? 'serial-candidate' : 'other', score: withScore, reason: `${sWith.reason} (avec le « S » initial)` });
+        fields.push({ ...base, id: `${id}s`, value: stripped, role: strippedScore >= SERIAL_MIN_SCORE ? 'serial-candidate' : 'other', score: strippedScore, reason: `${s.reason} (sans le « S » : identifiant Apple « (S) Serial No. »)` });
         return;
       }
       const s = value ? scoreSerial(value, key, symbology, name) : { score: 0, reason: 'Vide' };
