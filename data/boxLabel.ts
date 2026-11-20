@@ -136,8 +136,9 @@ export function gtinValid(digits: string): boolean {
 
 /**
  * Clé de dédoublonnage d'un code lu : `serialKey` (espaces retirés,
- * majuscules ; tirets gardés). Seule exception, avec la symbologie lue par la
- * caméra (`type`) : un EAN-13 commençant par 0 = l'UPC-A correspondant.
+ * majuscules ; tirets gardés). Lecture d'un code-barres produit (`type`
+ * EAN/UPC) : clé préfixée « P: », comparée seulement aux autres lectures
+ * produit ; un EAN-13 commençant par 0 y est égal à l'UPC-A correspondant.
  */
 export function boxCodeKey(data: string, type?: string): string {
   const t = typeof data === 'string' ? data.trim() : '';
@@ -145,9 +146,11 @@ export function boxCodeKey(data: string, type?: string): string {
   // les tirets sont gardés, « 1234-5670 » et « 12345670 » restent distincts
   // même si leurs chiffres forment un GTIN valide.
   const k = serialKey(t);
-  // Seule équivalence par les chiffres, sur preuve du type : un UPC-A lu comme
-  // EAN-13 (zéro de tête, iOS) est le même code que sa lecture UPC-A (Android).
-  if (type && PRODUCT_SYMBOLOGY.test(type) && /^0\d{12}$/.test(k) && gtinValid(k)) return k.slice(1);
+  // Codes-barres produit (symbologie EAN/UPC lue par la caméra) : clés à part
+  // (« P: »), égales seulement entre lectures produit. Seule équivalence par les
+  // chiffres : un UPC-A lu comme EAN-13 (zéro de tête, iOS) = sa lecture UPC-A
+  // (Android). Un Code 128 aux mêmes chiffres reste une lecture distincte.
+  if (type && PRODUCT_SYMBOLOGY.test(type)) return `P:${/^0\d{12}$/.test(k) && gtinValid(k) ? k.slice(1) : k}`;
   return k;
 }
 
