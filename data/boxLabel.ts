@@ -139,6 +139,7 @@ export function gtinValid(digits: string): boolean {
  * majuscules ; tirets gardés). Lecture d'un code-barres produit (`type`
  * EAN/UPC) : clé préfixée « P: », comparée seulement aux autres lectures
  * produit ; un EAN-13 commençant par 0 y est égal à l'UPC-A correspondant.
+ * Toute autre lecture : préfixe « S: » (deux espaces de clés disjoints).
  */
 export function boxCodeKey(data: string, type?: string): string {
   const t = typeof data === 'string' ? data.trim() : '';
@@ -151,7 +152,9 @@ export function boxCodeKey(data: string, type?: string): string {
   // chiffres : un UPC-A lu comme EAN-13 (zéro de tête, iOS) = sa lecture UPC-A
   // (Android). Un Code 128 aux mêmes chiffres reste une lecture distincte.
   if (type && PRODUCT_SYMBOLOGY.test(type)) return `P:${/^0\d{12}$/.test(k) && gtinValid(k) ? k.slice(1) : k}`;
-  return k;
+  // Autres lectures : préfixe distinct, aucune collision possible avec une clé produit
+  // (même un Code 128 dont le texte commence par « P: »).
+  return k ? `S:${k}` : '';
 }
 
 const ctrlRe = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
