@@ -42,6 +42,7 @@ import {
   boxActiveKeys,
   boxAddCode,
   boxCheckCode,
+  boxRejectDigest,
   boxChooseSerial,
   boxCodeKey,
   boxFieldChip,
@@ -523,9 +524,11 @@ export default function Scan() {
           return;
         }
         // Caméra : une seule fois par code, et sans remplacer un message d'ajout ou d'erreur.
-        if (boxRejectedRef.current.has(data)) return;
+        // Empreinte seulement (le contenu, ex. mot de passe Wi-Fi, n'est pas gardé).
+        const digest = boxRejectDigest(data);
+        if (boxRejectedRef.current.has(digest)) return;
         if (boxRejectedRef.current.size >= 50) boxRejectedRef.current = new Set();
-        boxRejectedRef.current.add(data);
+        boxRejectedRef.current.add(digest);
         setFeedback((f) => (f && f.kind !== 'info' ? f : { kind: 'info', text: rejected }));
         return;
       }
@@ -601,6 +604,15 @@ export default function Scan() {
     }
 
     if (addLoop) {
+      // Saisie manuelle d'un QR Wi-Fi / contact ou d'un code trop long : jamais un
+      // numéro de série (message fixe, sans le contenu saisi).
+      const refused = source === 'manual' ? boxCheckCode(data) : null;
+      if (refused !== null) {
+        setManualText('');
+        setFeedback({ kind: 'error', text: refused });
+        scheduleUnlock();
+        return;
+      }
       const pending = addSerial(addTarget, data, source, symbology);
       if (source === 'manual') setManualText('');
       if (pending) {
