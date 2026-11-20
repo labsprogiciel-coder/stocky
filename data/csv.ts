@@ -19,7 +19,7 @@
  *
  * Articles suivis par numéro de série : après le tableau et ses totaux, une
  * section « Détail des numéros de série » liste chaque appareil
- * (Article;Numéro de série;IMEI;Statut;Résultat), avec pour résultat
+ * (Article;Numéro de série;IMEI;IMEI 2;Statut;Résultat), avec pour résultat
  * « Trouvé », « Manquant » (attendu, non trouvé), « Inattendu » (trouvé, non
  * attendu) ou « Non compté » (article pas encore compté). En comptage à
  * l'aveugle en cours, seuls les appareils trouvés sont listés (« Trouvé »).
@@ -64,7 +64,7 @@ export type BuildCountCsvInput = {
 };
 
 /** Champs d'unité utilisés par l'export. */
-export type CsvUnit = { id: string; serial: string; imei?: string; status: UnitStatus };
+export type CsvUnit = { id: string; serial: string; imei?: string; imei2?: string; status: UnitStatus };
 
 /** Compatible avec `CountDiscrepancy` (`data/store.ts`). */
 export type CsvSerialDetail = {
@@ -78,7 +78,7 @@ export type CsvSerialDetail = {
 
 export type SerialResult = 'Trouvé' | 'Manquant' | 'Inattendu' | 'Non compté';
 
-const SERIAL_COLUMNS = ['Article', 'Numéro de série', 'IMEI', 'Statut', 'Résultat'];
+const SERIAL_COLUMNS = ['Article', 'Numéro de série', 'IMEI', 'IMEI 2', 'Statut', 'Résultat'];
 
 export type CountRowStatus = CountStatus | 'À compter';
 
@@ -229,7 +229,7 @@ function buildSerialLines(
     const d = byItem.get(item.id);
     if (!d) continue;
     const row = (u: CsvUnit, result: SerialResult) =>
-      [csvCell(item.name), csvIdCell(u.serial), csvIdCell(u.imei ?? ''), csvCell(UNIT_STATUS_LABELS[u.status] ?? u.status), csvCell(result)].join(SEP);
+      [csvCell(item.name), csvIdCell(u.serial), csvIdCell(u.imei ?? ''), csvIdCell(u.imei2 ?? ''), csvCell(UNIT_STATUS_LABELS[u.status] ?? u.status), csvCell(result)].join(SEP);
     if (hideExpected) {
       for (const u of d.found) out.push(row(u, 'Trouvé'));
       continue;

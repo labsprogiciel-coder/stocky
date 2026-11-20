@@ -6,6 +6,8 @@
  *   `/scan?pick=serial` : le code lu est transmis au retour par
  *   `setPendingPick`/`consumePendingPick` (même principe que le scan de comptage).
  * - IMEI facultatif (clavier numérique, contrôle de Luhn en direct), lui aussi scannable.
+ * - IMEI 2 facultatif (téléphone double SIM), mêmes contrôles et scanner
+ *   (`/scan?pick=imei2`) ; il demande un IMEI 1 et doit en être différent.
  * - Statut, attributaire (obligatoire pour « Attribué »), note.
  * - Enregistrement par `addUnit`/`updateUnit` ; les erreurs du store s'affichent
  *   sous le champ concerné. Verrou contre le double appui.
@@ -23,6 +25,8 @@ import {
   addUnit,
   unitLimitError,
   consumePendingPick,
+  IMEI2_SAME_AS_IMEI,
+  IMEI2_WITHOUT_IMEI,
   normalizeImei,
   updateUnit,
   type Item,
@@ -43,6 +47,18 @@ function imeiFeedback(text: string): { hint: string; color?: string } {
   const r = normalizeImei(d);
   if (r.error !== undefined) return { hint: r.error, color: '#B91C1C' };
   return { hint: '✓ IMEI valide (clé de contrôle correcte)', color: colors.primary };
+}
+
+/** Aide en direct sur l'IMEI 2 saisi (double SIM), compte tenu de l'IMEI 1. */
+function imei2Feedback(text: string, imei1: string): { hint: string; color?: string } {
+  const d = text.replace(/[\s-]+/g, '');
+  if (!d) return { hint: 'Facultatif — second IMEI des téléphones double SIM.' };
+  if (!imei1.replace(/[\s-]+/g, '')) return { hint: IMEI2_WITHOUT_IMEI, color: '#B91C1C' };
+  const base = imeiFeedback(d);
+  if (d.length === 15 && base.color === colors.primary && d === imei1.replace(/[\s-]+/g, '')) {
+    return { hint: IMEI2_SAME_AS_IMEI, color: '#B91C1C' };
+  }
+  return base;
 }
 
 function ScanAccessory({ label, onPress, disabled }: { label: string; onPress: () => void; disabled?: boolean }) {
@@ -71,7 +87,9 @@ export type UnitFormProps = {
   initialSerial?: string;
   /** Ajout : IMEI prérempli (« Scanner une boîte »). */
   initialImei?: string;
-  /** Ajout : note préremplie (« Scanner une boîte » : IMEI 2). */
+  /** Ajout : IMEI 2 prérempli (« Scanner une boîte », téléphone double SIM). */
+  initialImei2?: string;
+  /** Ajout : note préremplie. */
   initialNote?: string;
   /** Appelé après un enregistrement réussi, ou sur « Annuler ». */
   onDone: () => void;
@@ -79,10 +97,11 @@ export type UnitFormProps = {
   children?: React.ReactNode;
 };
 
-export function UnitForm({ item, unit, initialSerial, initialImei, initialNote, onDone, children }: UnitFormProps) {
+export function UnitForm({ item, unit, initialSerial, initialImei, initialImei2, initialNote, onDone, children }: UnitFormProps) {
   const editing = unit !== undefined;
   const [serial, setSerial] = useState(unit?.serial ?? initialSerial ?? '');
   const [imei, setImei] = useState(unit?.imei ?? initialImei ?? '');
+  const [imei2, setImei2] = useState(unit?.imei2 ?? initialImei2 ?? '');
   const [status, setStatus] = useState<UnitStatus>(unit?.status ?? 'in_stock');
   const [assignee, setAssignee] = useState(unit?.assignee ?? '');
   const [note, setNote] = useState(unit?.note ?? initialNote ?? '');
@@ -118,6 +137,9 @@ export function UnitForm({ item, unit, initialSerial, initialImei, initialNote, 
       if (target === 'serial') {
         setSerial(code);
         setErrors((e) => ({ ...e, serial: undefined }));
+      } else if (target === 'imei2') {
+        setImei2(code);
+        setErrors((e) => ({ ...e, imei2: undefined }));
       } else {
         setImei(code);
         setErrors((e) => ({ ...e, imei: undefined }));
@@ -140,8 +162,8 @@ export function UnitForm({ item, unit, initialSerial, initialImei, initialNote, 
     submittingRef.current = true;
     const assigneeValue = status === 'assigned' ? assignee : '';
     const res = editing
-      ? updateUnit(unit.id, { serial, imei, status, assignee: assigneeValue, note })
-      : addUnit(item.id, { serial, imei, status, assignee: assigneeValue, note });
+      ? updateUnit(unit.id, { serial, imei, imei2, status, assignee: assigneeValue, note })
+      : addUnit(item.id, { serial, imei, imei2, status, assignee: assigneeValue, note });
     if (res.error !== undefined) {
       submittingRef.current = false;
       if ('limit' in res && res.limit === 'units') {
@@ -162,6 +184,7 @@ export function UnitForm({ item, unit, initialSerial, initialImei, initialNote, 
       setAddedCount((n) => n + 1);
       setSerial('');
       setImei('');
+      setImei2('');
       setNote('');
       setErrors({});
       setFormError(null);
@@ -172,6 +195,7 @@ export function UnitForm({ item, unit, initialSerial, initialImei, initialNote, 
   };
 
   const imeiInfo = imeiFeedback(imei);
+  const imei2Info = imei2Feedback(imei2, imei);
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }} edges={['bottom']}>
@@ -205,7 +229,7 @@ export function UnitForm({ item, unit, initialSerial, initialImei, initialNote, 
           <TextField
             label="IMEI"
             value={imei}
-            onChangeText={(t) => { setImei(t); clear('imei'); }}
+            onChangeText={(t) => { setImei(t); clear('imei'); clear('imei2'); }}
             placeholder="15 chiffres"
             keyboardType="number-pad"
             maxLength={20}
@@ -214,6 +238,19 @@ export function UnitForm({ item, unit, initialSerial, initialImei, initialNote, 
             hint={imeiInfo.hint}
             hintColor={imeiInfo.color}
             accessory={<ScanAccessory label="Scanner l'IMEI" onPress={() => openScanner('imei')} />}
+          />
+          <TextField
+            label="IMEI 2"
+            value={imei2}
+            onChangeText={(t) => { setImei2(t); clear('imei2'); }}
+            placeholder="15 chiffres (double SIM)"
+            keyboardType="number-pad"
+            maxLength={20}
+            autoCorrect={false}
+            error={errors.imei2}
+            hint={imei2Info.hint}
+            hintColor={imei2Info.color}
+            accessory={<ScanAccessory label="Scanner l'IMEI 2" onPress={() => openScanner('imei2')} />}
           />
         </Card>
 

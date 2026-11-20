@@ -38,7 +38,7 @@ export const items: Item[] = [...quantityItems, ...deviceItems];
 
 /** Unités d'exemple (IMEI à clé de Luhn valide) ; dates fixées par `loadSampleData()`. */
 export const units: Omit<Unit, 'receivedAt' | 'updatedAt'>[] = [
-  { id: 'su1', itemId: '9', serial: 'R58W1A2B3C', imei: '356938035643809', status: 'in_stock' },
+  { id: 'su1', itemId: '9', serial: 'R58W1A2B3C', imei: '356938035643809', imei2: '356938035643841', status: 'in_stock' },
   { id: 'su2', itemId: '9', serial: 'R58W1A2B3D', imei: '356938035643817', status: 'in_stock' },
   { id: 'su3', itemId: '9', serial: 'R58W1A2B3E', imei: '356938035643825', status: 'repair', note: 'Écran fissuré' },
   { id: 'su4', itemId: '10', serial: 'PF4K7Z91', status: 'in_stock' },

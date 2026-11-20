@@ -493,7 +493,7 @@ function SerialCountPanel({
         accessibilityLabel={`${u.serial}, ${ticked ? 'trouvé' : 'non trouvé'}${tag ? `, ${tag}` : ''}`}
       >
         <Text style={{ fontSize: 14, fontWeight: '600', color: colors.text }}>{u.serial}</Text>
-        {u.imei !== undefined && <Muted style={{ fontSize: 12 }}>IMEI {u.imei}</Muted>}
+        {u.imei !== undefined && <Muted style={{ fontSize: 12 }}>IMEI {u.imei}{u.imei2 !== undefined ? ` · IMEI 2 ${u.imei2}` : ''}</Muted>}
       </View>
       {tag && (
         <View style={{ paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999, backgroundColor: colors.warnBg }}>

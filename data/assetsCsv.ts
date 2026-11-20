@@ -22,7 +22,7 @@ import { UNIT_STATUS_JIRA_LABELS, serialKey, type Unit } from './units';
 export type AssetsCsvItem = { id: string; name: string; folder: string };
 
 export const ASSETS_CSV_HEADER = [
-  'Name', 'Serial Number', 'IMEI', 'Model', 'Category', 'Status', 'Assigned To', 'Received', 'Last Updated', 'Note',
+  'Name', 'Serial Number', 'IMEI', 'IMEI 2', 'Model', 'Category', 'Status', 'Assigned To', 'Received', 'Last Updated', 'Note',
 ] as const;
 
 const SEP = ',';
@@ -78,6 +78,7 @@ export function buildAssetsCsv(units: readonly Unit[], items: readonly AssetsCsv
         `${item.name} - ${unit.serial}`,
         unit.serial,
         unit.imei,
+        unit.imei2,
         item.name,
         item.folder,
         UNIT_STATUS_JIRA_LABELS[unit.status],

@@ -5,11 +5,11 @@ import { EmptyState, Screen } from '../../components/ui';
 import { getItem } from '../../data/store';
 
 /**
- * Ajout d'un appareil : `/unit/new?itemId=…&serial=…&imei=…&note=…` (champs
+ * Ajout d'un appareil : `/unit/new?itemId=…&serial=…&imei=…&imei2=…&note=…` (champs
  * préremplis facultatifs, ex. codes lus par « Scanner une boîte »).
  */
 export default function NewUnit() {
-  const params = useLocalSearchParams<{ itemId?: string; serial?: string; imei?: string; note?: string }>();
+  const params = useLocalSearchParams<{ itemId?: string; serial?: string; imei?: string; imei2?: string; note?: string }>();
   const itemId = typeof params.itemId === 'string' ? params.itemId : '';
   // Lu une seule fois : le formulaire garde ses valeurs pendant la saisie.
   const [item] = useState(() => getItem(itemId) ?? null);
@@ -49,6 +49,7 @@ export default function NewUnit() {
       item={item}
       initialSerial={typeof params.serial === 'string' ? params.serial : undefined}
       initialImei={typeof params.imei === 'string' ? params.imei : undefined}
+      initialImei2={typeof params.imei2 === 'string' ? params.imei2 : undefined}
       initialNote={typeof params.note === 'string' ? params.note : undefined}
       onDone={() => router.back()}
     />

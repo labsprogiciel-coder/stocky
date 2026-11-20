@@ -18,7 +18,7 @@
  *   (`setPendingCountScan`), qui marque l'appareil trouvé ou va sur l'article.
  *   Avec `&multi=1` (« Scanner les appareils ») : le scanner reste ouvert et
  *   chaque numéro de série lu est marqué trouvé (`markUnitFound`).
- * - `?pick=serial|imei` : sélection pour un formulaire d'appareil ; le code lu
+ * - `?pick=serial|imei|imei2` : sélection pour un formulaire d'appareil ; le code lu
  *   est transmis au retour (`setPendingPick`).
  * - `?addItemId=…` : ouvre directement la boucle « Ajouter des appareils ».
  * - `?box=1` (option `&addItemId=…`) : « Scanner une boîte ». La caméra reste
@@ -47,7 +47,7 @@ import {
   type BoxChip,
   type BoxSession,
 } from '../data/boxLabel';
-import { addDeviceFromBox, analyzeBoxForStore, boxDuplicateError, boxNote, resolveBoxArticle } from '../data/boxDevice';
+import { addDeviceFromBox, analyzeBoxForStore, boxDuplicateError, boxImeis, resolveBoxArticle } from '../data/boxDevice';
 import {
   UNIT_STATUS_LABELS,
   addUnit,
@@ -113,7 +113,7 @@ export default function Scan() {
   const countTarget = typeof params.countId === 'string' && params.countId.length > 0 ? params.countId : null;
   const countMode = countTarget !== null;
   const multiCount = countMode && params.multi === '1';
-  const pickTarget: PickTarget | null = !countMode && (params.pick === 'serial' || params.pick === 'imei') ? params.pick : null;
+  const pickTarget: PickTarget | null = !countMode && (params.pick === 'serial' || params.pick === 'imei' || params.pick === 'imei2') ? params.pick : null;
   const launchedBox = !countMode && !pickTarget && params.box === '1';
   const paramAddId = typeof params.addItemId === 'string' && params.addItemId.length > 0 ? params.addItemId : null;
   const launchedAddId = !countMode && !pickTarget && !launchedBox ? paramAddId : null;
@@ -420,15 +420,15 @@ export default function Scan() {
     setRefresh((n) => n + 1);
   };
 
-  /** « Modifier » : formulaire d'appareil prérempli (numéro de série, IMEI 1, IMEI 2 en note). */
+  /** « Modifier » : formulaire d'appareil prérempli (numéro de série, IMEI 1, IMEI 2). */
   const editBox = () => {
     if (!boxItem) return;
     const a = analyzeBoxForStore(boxRef.current);
-    const note = boxNote(a.imei2);
+    const { imei, imei2 } = boxImeis(a);
     boxEditRef.current = { before: new Set(getUnits(boxItem.id).map((u) => u.id)), itemId: boxItem.id, explicit: boxItemId !== null };
     router.push({
       pathname: '/unit/new',
-      params: { itemId: boxItem.id, serial: a.serial?.value ?? '', ...(a.imei1 ? { imei: a.imei1 } : {}), ...(note ? { note } : {}) },
+      params: { itemId: boxItem.id, serial: a.serial?.value ?? '', ...(imei ? { imei } : {}), ...(imei2 ? { imei2 } : {}) },
     });
   };
 
@@ -660,6 +660,8 @@ export default function Scan() {
     ? "Scannez le numéro de série de l'appareil"
     : pickTarget === 'imei'
     ? "Scannez l'IMEI de l'appareil"
+    : pickTarget === 'imei2'
+    ? "Scannez l'IMEI 2 de l'appareil (double SIM)"
     : multiCount
     ? 'Scannez les numéros de série des appareils'
     : countMode
@@ -674,6 +676,8 @@ export default function Scan() {
     ? "Saisissez le numéro de série de l'appareil."
     : pickTarget === 'imei'
     ? "Saisissez l'IMEI (15 chiffres)."
+    : pickTarget === 'imei2'
+    ? "Saisissez l'IMEI 2 (15 chiffres)."
     : multiCount
     ? "Saisissez le numéro de série ou l'IMEI de l'appareil trouvé."
     : addLoop
@@ -779,13 +783,13 @@ export default function Scan() {
             <TextInput
               value={manualText}
               onChangeText={setManualText}
-              placeholder={pickTarget === 'imei' ? 'Ex. 356938035643809' : pickTarget || loop ? 'Ex. R58W1A2B3C' : 'Ex. 3760123450003 ou SKU-1000'}
+              placeholder={pickTarget === 'imei' || pickTarget === 'imei2' ? 'Ex. 356938035643809' : pickTarget || loop ? 'Ex. R58W1A2B3C' : 'Ex. 3760123450003 ou SKU-1000'}
               placeholderTextColor={colors.muted}
-              accessibilityLabel={pickTarget === 'imei' ? 'IMEI' : pickTarget || loop ? 'Numéro de série' : 'Code-barres, référence ou numéro de série'}
+              accessibilityLabel={pickTarget === 'imei' ? 'IMEI' : pickTarget === 'imei2' ? 'IMEI 2' : pickTarget || loop ? 'Numéro de série' : 'Code-barres, référence ou numéro de série'}
               autoFocus
               autoCapitalize="characters"
               autoCorrect={false}
-              keyboardType={pickTarget === 'imei' ? 'number-pad' : 'default'}
+              keyboardType={pickTarget === 'imei' || pickTarget === 'imei2' ? 'number-pad' : 'default'}
               returnKeyType={loop ? 'done' : 'search'}
               blurOnSubmit={!loop}
               onSubmitEditing={() => handleCode(manualText, 'manual')}
@@ -1096,6 +1100,11 @@ export default function Scan() {
                   IMEI : <Text selectable style={{ fontWeight: '600' }}>{unitMatch.unit.imei}</Text>
                 </Text>
               )}
+              {unitMatch.unit.imei2 !== undefined && (
+                <Text style={{ fontSize: 14, color: colors.text }}>
+                  IMEI 2 : <Text selectable style={{ fontWeight: '600' }}>{unitMatch.unit.imei2}</Text>
+                </Text>
+              )}
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 }}>
                 <UnitStatusChip status={unitMatch.unit.status} />
                 {unitMatch.unit.assignee !== undefined && (
@@ -1178,7 +1187,7 @@ export default function Scan() {
               <Btn
                 title="Scanner une boîte"
                 variant="outline"
-                accessibilityHint="Lit tous les codes de l'étiquette (numéro de série, IMEI, code produit) pour ajouter l'appareil en une fois"
+                accessibilityHint="Lit tous les codes de l'étiquette (numéro de série, IMEI 1 et 2, code produit) pour ajouter l'appareil en une fois"
                 onPress={() => startBox(serialItem.id)}
               />
             </>

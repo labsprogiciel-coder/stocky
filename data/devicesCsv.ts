@@ -7,7 +7,7 @@
  * français : UTF-8 avec BOM, séparateur `;`, fins de ligne CRLF, guillemets
  * si nécessaire, neutralisation des formules (`'` devant `=`, `+`, `-`, `@`),
  * identifiants composés uniquement de chiffres écrits `="…"` (numéro de
- * série, IMEI, SKU, code-barres : zéros de tête et 15 chiffres conservés).
+ * série, IMEI 1 et 2, SKU, code-barres : zéros de tête et 15 chiffres conservés).
  *
  * DEUX fichiers, un tableau chacun, plutôt qu'un fichier à deux sections :
  * Excel ouvre un CSV comme une seule feuille, et le tri ou le filtre
@@ -41,7 +41,7 @@ export type ExportItem = {
 };
 
 export const DEVICES_CSV_HEADER = [
-  'Article', 'Catégorie', 'Numéro de série', 'IMEI', 'Statut', 'Attribué à', 'Reçu le', 'Modifié le', 'Note',
+  'Article', 'Catégorie', 'Numéro de série', 'IMEI', 'IMEI 2', 'Statut', 'Attribué à', 'Reçu le', 'Modifié le', 'Note',
   'SKU', 'Code-barres', 'Seuil', 'Prix',
 ] as const;
 
@@ -77,6 +77,7 @@ export function buildDevicesCsv(units: readonly Unit[], items: readonly ExportIt
         csvCell(item.folder),
         csvIdCell(unit.serial),
         csvIdCell(unit.imei ?? ''),
+        csvIdCell(unit.imei2 ?? ''),
         csvCell(UNIT_STATUS_LABELS[unit.status] ?? unit.status),
         csvCell(unit.status === 'assigned' ? unit.assignee : undefined),
         csvCell(Number.isFinite(unit.receivedAt) ? formatCsvDateTime(unit.receivedAt) : undefined),

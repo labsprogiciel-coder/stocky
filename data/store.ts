@@ -17,7 +17,8 @@
  *
  * Suivi par numéro de série (`Item.serialized`, choix propre à chaque
  * article) : un article suivi est composé d'unités (`Unit`, une par appareil,
- * clé = numéro de série, IMEI facultatif), stockées sous `v1.units` (ajout
+ * clé = numéro de série, IMEI facultatif, second IMEI facultatif pour un
+ * téléphone double SIM), stockées sous `v1.units` (ajout
  * rétrocompatible : clé absente = aucune unité, pas de changement de schéma).
  * Le stock d'un tel article est DÉRIVÉ : `item.qty` = nombre de ses unités
  * « En stock », recalculé après chaque mutation d'unité. `adjustStock` et
@@ -27,13 +28,17 @@
  * enregistre une Sortie de 1 (le stock diminue, le changement reste tracé) ;
  * supprimer une unité d'un autre statut n'enregistre rien.
  *
- * Un numéro de série ou un IMEI ne peut pas être égal au code-barres ou au SKU
- * d'un article (et inversement), pour qu'un scan reste non ambigu.
+ * Un numéro de série ou un IMEI (IMEI 1 ou IMEI 2) ne peut pas être égal au
+ * code-barres ou au SKU d'un article (et inversement), pour qu'un scan reste
+ * non ambigu. Les IMEI 1 et IMEI 2 de tous les appareils sont uniques
+ * ensemble : l'IMEI 2 d'un appareil ne peut pas être l'IMEI 1 d'un autre.
  */
 import { items as sampleItems, recent as sampleRecent, units as sampleUnits } from './mock';
 import { KEYS, clearAll, isPersistent, readRaw, removeKey, writeJSON, writeRaw } from './storage';
 import {
   ASSIGNEE_MAX_LENGTH,
+  IMEI2_SAME_AS_IMEI,
+  IMEI2_WITHOUT_IMEI,
   foldAccents,
   NOTE_MAX_LENGTH,
   SERIAL_MAX_LENGTH,
@@ -48,6 +53,8 @@ import {
 } from './units';
 
 export {
+  IMEI2_SAME_AS_IMEI,
+  IMEI2_WITHOUT_IMEI,
   UNIT_STATUSES,
   UNIT_STATUS_JIRA_LABELS,
   UNIT_STATUS_LABELS,
@@ -213,6 +220,8 @@ export type CompleteCountResult =
 export type NewUnitInput = {
   serial: string;
   imei?: string;
+  /** Second IMEI (double SIM) : seulement avec `imei`, différent de lui. */
+  imei2?: string;
   /** Par défaut `'in_stock'`. */
   status?: UnitStatus;
   /** Obligatoire si `status === 'assigned'`. */
@@ -221,19 +230,21 @@ export type NewUnitInput = {
 };
 
 /**
- * Champs modifiables d'une unité. `imei: ''`, `assignee: ''` et `note: ''`
- * retirent la valeur. L'attributaire n'est conservé que pour le statut
+ * Champs modifiables d'une unité. `imei: ''`, `imei2: ''`, `assignee: ''` et
+ * `note: ''` retirent la valeur (retirer l'IMEI 1 en gardant l'IMEI 2 est
+ * refusé : « Renseignez d'abord l'IMEI 1. »). L'attributaire n'est conservé que pour le statut
  * « Attribué » : passer à un autre statut le retire.
  */
 export type UpdateUnitPatch = {
   serial?: string;
   imei?: string;
+  imei2?: string;
   status?: UnitStatus;
   assignee?: string;
   note?: string;
 };
 
-export type UnitField = 'serial' | 'imei' | 'status' | 'assignee' | 'note' | 'itemId' | 'id';
+export type UnitField = 'serial' | 'imei' | 'imei2' | 'status' | 'assignee' | 'note' | 'itemId' | 'id';
 
 export type UnitResult =
   | { unit: Unit; error?: undefined; field?: undefined; limit?: undefined }
@@ -267,7 +278,7 @@ export type CountDiscrepancy = {
   unexpected: Unit[];
 };
 
-/** Résolution d'un code scanné : unité (numéro de série ou IMEI) ou article (code-barres ou SKU). */
+/** Résolution d'un code scanné : unité (numéro de série, IMEI 1 ou IMEI 2) ou article (code-barres ou SKU). */
 export type CodeMatch =
   | { kind: 'unit'; unit: Unit; item: Item }
   | { kind: 'item'; item: Item };
@@ -377,6 +388,7 @@ function isUnit(v: unknown): v is Unit {
   if (serial.error !== undefined || serial.serial !== v.serial) return false;
   return (
     (v.imei === undefined || isValidImei(v.imei)) &&
+    (v.imei2 === undefined || (isValidImei(v.imei2) && v.imei !== undefined && v.imei2 !== v.imei)) &&
     isUnitStatus(v.status) &&
     isOptString(v.assignee, ASSIGNEE_MAX_LENGTH) &&
     // Même règle qu'à l'écriture : un appareil attribué a un attributaire.
@@ -385,6 +397,19 @@ function isUnit(v: unknown): v is Unit {
     isFiniteNumber(v.receivedAt) &&
     isFiniteNumber(v.updatedAt)
   );
+}
+
+/**
+ * Retire d'un appareil stocké un IMEI 2 invalide (format, clé de Luhn, sans
+ * IMEI 1 valide ou égal à l'IMEI 1) plutôt que de rejeter l'appareil : le
+ * second IMEI est une information secondaire. Renvoie la valeur d'origine si
+ * rien n'est retiré.
+ */
+function withoutInvalidImei2(v: unknown): unknown {
+  if (!isRecord(v) || v.imei2 === undefined) return v;
+  if (isValidImei(v.imei2) && isValidImei(v.imei) && v.imei2 !== v.imei) return v;
+  const { imei2: _drop, ...rest } = v;
+  return rest;
 }
 
 function toCountSession(v: unknown): CountSession | null {
@@ -415,7 +440,9 @@ function toCountSession(v: unknown): CountSession | null {
   if (isRecord(v.unitSnapshot)) {
     unitSnapshot = {};
     for (const [unitId, u] of Object.entries(v.unitSnapshot)) {
-      if (isSafeKey(unitId) && isUnit(u) && u.id === unitId) unitSnapshot[unitId] = u;
+      // Un IMEI 2 invalide est retiré de la copie, l'appareil est conservé.
+      const cu = withoutInvalidImei2(u);
+      if (isSafeKey(unitId) && isUnit(cu) && cu.id === unitId) unitSnapshot[unitId] = cu;
     }
   }
   return {
@@ -605,6 +632,8 @@ type LoadReport = {
   sessionsDropped: number;
   /** Références de photo invalides retirées. */
   photosDropped: number;
+  /** IMEI 2 invalides ou en double retirés (appareils conservés). */
+  imei2Dropped: number;
   /** Articles suivis par numéro de série dont le stock a été recalculé. */
   qtyFixed: number;
 };
@@ -679,6 +708,10 @@ function loadStateFromStorage(): Loaded {
   // peut pas être l'IMEI d'un autre appareil (tirets et espaces ignorés), ni le
   // code-barres ou le SKU d'un article.
   const rawUnits = readData(KEYS.units, []);
+  const cleanedUnits = Array.isArray(rawUnits) ? rawUnits.map(withoutInvalidImei2) : rawUnits;
+  let imei2DroppedCount = Array.isArray(rawUnits) && Array.isArray(cleanedUnits)
+    ? cleanedUnits.filter((x, i) => x !== rawUnits[i]).length
+    : 0;
   const serializedIds = new Set(items.filter((i) => i.serialized).map((i) => i.id));
   const itemCodes = new Set<string>();
   for (const i of items) {
@@ -695,19 +728,38 @@ function loadStateFromStorage(): Loaded {
   itemImeis.delete('');
   const serialKeys = new Set<string>(); // serialKey des numéros de série conservés
   const serialDigits = new Set<string>(); // les mêmes, tirets retirés (forme IMEI)
-  const imeis = new Set<string>(); // IMEI conservés
-  const units = validList(rawUnits, isUnit).filter((u) => {
-    if (!serializedIds.has(u.itemId)) return false;
+  const imeis = new Set<string>(); // IMEI 1 et IMEI 2 conservés
+  // Un IMEI 2 en double (IMEI 1 ou 2 d'un autre appareil, numéro de série,
+  // code d'article) est retiré, l'appareil est conservé.
+  // IMEI 1 et numéros de série (forme IMEI) de tous les appareils candidats :
+  // un IMEI 2 qui en reprend un est retiré avant de pouvoir faire écarter un
+  // appareil suivant (un IMEI 2 ne coûte jamais un appareil).
+  const candidateUnits = validList(cleanedUnits, isUnit).filter((u) => serializedIds.has(u.itemId));
+  const primaryCodes = new Set<string>();
+  for (const u of candidateUnits) {
+    primaryCodes.add(imeiDigits(serialKey(u.serial)));
+    if (u.imei !== undefined) primaryCodes.add(u.imei);
+  }
+  const units: Unit[] = [];
+  for (const u0 of candidateUnits) {
+    let u = u0;
+    if (!serializedIds.has(u.itemId)) continue;
     const sk = serialKey(u.serial);
     const sd = imeiDigits(sk);
-    if (serialKeys.has(sk) || imeis.has(sd)) return false;
-    if (u.imei !== undefined && (imeis.has(u.imei) || serialDigits.has(u.imei))) return false;
-    if (itemCodes.has(looseKey(u.serial)) || (u.imei !== undefined && itemImeis.has(u.imei))) return false;
+    if (serialKeys.has(sk) || imeis.has(sd)) continue;
+    if (u.imei !== undefined && (imeis.has(u.imei) || serialDigits.has(u.imei))) continue;
+    if (itemCodes.has(looseKey(u.serial)) || (u.imei !== undefined && itemImeis.has(u.imei))) continue;
+    if (u.imei2 !== undefined && (imeis.has(u.imei2) || primaryCodes.has(u.imei2) || serialDigits.has(u.imei2) || itemImeis.has(u.imei2) || u.imei2 === sd)) {
+      const { imei2: _drop, ...rest } = u;
+      u = rest;
+      imei2DroppedCount++;
+    }
     serialKeys.add(sk);
     serialDigits.add(sd);
     if (u.imei !== undefined) imeis.add(u.imei);
-    return true;
-  });
+    if (u.imei2 !== undefined) imeis.add(u.imei2);
+    units.push(u);
+  }
   // Stock dérivé : resynchronisé s'il diffère des unités stockées.
   // Comptage en une passe (linéaire) : une sauvegarde restaurée peut contenir
   // des milliers d'appareils.
@@ -733,7 +785,7 @@ function loadStateFromStorage(): Loaded {
   const dirty: Part[] = [];
   if (!Array.isArray(rawItems) || items.length !== rawItems.length || photoDropped || qtyFixed) dirty.push('items');
   if (!Array.isArray(rawMovements) || movements.length !== rawMovements.length) dirty.push('movements');
-  if (!Array.isArray(rawUnits) || units.length !== rawUnits.length) dirty.push('units');
+  if (!Array.isArray(rawUnits) || units.length !== rawUnits.length || imei2DroppedCount > 0) dirty.push('units');
 
   const sessions: Record<string, CountSession> = {};
   const rawSessions = readData(KEYS.countSessions, {});
@@ -759,6 +811,7 @@ function loadStateFromStorage(): Loaded {
     movementsDropped: Array.isArray(rawMovements) ? rawMovements.length - movements.length : 0,
     sessionsDropped: Math.max(0, rawSessionCount - Object.keys(sessions).length),
     photosDropped: (rawItems as unknown[]).filter((x) => isRecord(x) && x.photo !== undefined && !isPhotoName(x.photo)).length,
+    imei2Dropped: imei2DroppedCount,
     qtyFixed: qtyFixedCount,
   };
   return { state: loaded, writes: dirty, readFailed: false, report };
@@ -1177,14 +1230,14 @@ function isItemImei(imei: string): boolean {
 }
 
 /**
- * `true` si `code` correspond au numéro de série ou à l'IMEI d'une unité,
+ * `true` si `code` correspond au numéro de série ou à un IMEI (1 ou 2) d'une unité,
  * avec les équivalences de `findUnitByCode` (IMEI : tirets et espaces ignorés).
  */
 function isUnitCode(code: string): boolean {
   const c = looseKey(code);
   if (!c) return false;
   const imei = imeiForm(code);
-  return state().units.some((u) => looseKey(u.serial) === c || (u.imei !== undefined && u.imei === imei));
+  return state().units.some((u) => looseKey(u.serial) === c || (imei !== '' && (u.imei === imei || u.imei2 === imei)));
 }
 
 /**
@@ -1519,17 +1572,17 @@ export function getUnit(id: string): Unit | undefined {
   return state().units.find((u) => u.id === id);
 }
 
-/** Recherche par numéro de série (`serialKey`) puis par IMEI (espaces et tirets ignorés). */
+/** Recherche par numéro de série (`serialKey`) puis par IMEI 1 ou IMEI 2 (espaces et tirets ignorés). */
 function findUnitIn(units: readonly Unit[], code: string): Unit | undefined {
   const k = serialKey(code);
   if (!k) return undefined;
   const bySerial = units.find((u) => serialKey(u.serial) === k);
   if (bySerial) return bySerial;
   const d = imeiDigits(code.trim());
-  return /^\d{15}$/.test(d) ? units.find((u) => u.imei === d) : undefined;
+  return /^\d{15}$/.test(d) ? units.find((u) => u.imei === d || u.imei2 === d) : undefined;
 }
 
-/** Unité dont le numéro de série ou l'IMEI correspond à `code`. */
+/** Unité dont le numéro de série, l'IMEI 1 ou l'IMEI 2 correspond à `code`. */
 export function findUnitByCode(code: string): Unit | undefined {
   return findUnitIn(state().units, code);
 }
@@ -1546,8 +1599,8 @@ export function findByCode(code: string): CodeMatch | null {
   return unit && unitItem ? { kind: 'unit', unit, item: unitItem } : null;
 }
 
-type UnitFields = Pick<Unit, 'serial' | 'imei' | 'status' | 'assignee' | 'note'>;
-type UnitDraft = { serial: string; imei?: string; status: UnitStatus; assignee?: string; note?: string };
+type UnitFields = Pick<Unit, 'serial' | 'imei' | 'imei2' | 'status' | 'assignee' | 'note'>;
+type UnitDraft = { serial: string; imei?: string; imei2?: string; status: UnitStatus; assignee?: string; note?: string };
 
 /**
  * Recherches utilisées par `validateUnit` : sur l'état courant
@@ -1555,9 +1608,9 @@ type UnitDraft = { serial: string; imei?: string; status: UnitStatus; assignee?:
  * (`ImportIndex`, mêmes règles, appareils et articles prévus compris).
  */
 type UnitLookup = {
-  /** Premier appareil (ordre de réception) dont le `serialKey` vaut `sk` ou dont l'IMEI vaut `sd`. */
+  /** Premier appareil (ordre de réception) dont le `serialKey` vaut `sk` ou dont l'IMEI (1 ou 2) vaut `sd`. */
   dupSerial(sk: string, sd: string): Unit | undefined;
-  /** Premier appareil dont l'IMEI vaut `imei` ou dont le numéro de série, tirets retirés, vaut `imei`. */
+  /** Premier appareil dont l'IMEI 1 ou 2 vaut `imei` ou dont le numéro de série, tirets retirés, vaut `imei`. */
   dupImei(imei: string): Unit | undefined;
   /** Comme `isItemCode`. */
   isItemCode(code: string): boolean;
@@ -1569,8 +1622,8 @@ type UnitLookup = {
 function stateUnitLookup(exceptId?: string): UnitLookup {
   const others = state().units.filter((u) => u.id !== exceptId);
   return {
-    dupSerial: (sk, sd) => others.find((u) => serialKey(u.serial) === sk || u.imei === sd),
-    dupImei: (imei) => others.find((u) => u.imei === imei || imeiDigits(serialKey(u.serial)) === imei),
+    dupSerial: (sk, sd) => others.find((u) => serialKey(u.serial) === sk || u.imei === sd || u.imei2 === sd),
+    dupImei: (imei) => others.find((u) => u.imei === imei || u.imei2 === imei || imeiDigits(serialKey(u.serial)) === imei),
     isItemCode,
     isItemImei,
     itemName: (itemId) => getItem(itemId)?.name,
@@ -1625,6 +1678,23 @@ function validateUnit(
     if (lookup.isItemImei(imei)) return { error: "Cet IMEI est déjà utilisé comme code-barres ou SKU d'un article.", field: 'imei' };
   }
 
+  // Second IMEI (double SIM) : mêmes règles, seulement avec un IMEI 1, et
+  // différent de lui.
+  let imei2: string | undefined;
+  const rawImei2 = d.imei2?.trim() ?? '';
+  if (rawImei2) {
+    const ir = normalizeImei(rawImei2);
+    if (ir.error !== undefined) return { error: ir.error, field: 'imei2' };
+    if (imei === undefined) return { error: IMEI2_WITHOUT_IMEI, field: 'imei2' };
+    imei2 = ir.imei;
+    if (imei2 === imei) return { error: IMEI2_SAME_AS_IMEI, field: 'imei2' };
+    // Numéro de série de ce même appareil, tirets retirés : le scan serait ambigu.
+    if (imei2 === sd) return { error: "L'IMEI 2 ne peut pas être le numéro de série de l'appareil.", field: 'imei2' };
+    const dup2 = lookup.dupImei(imei2);
+    if (dup2) return { error: `Cet IMEI est déjà enregistré${itemLabel(dup2.itemId)}.`, field: 'imei2' };
+    if (lookup.isItemImei(imei2)) return { error: "Cet IMEI est déjà utilisé comme code-barres ou SKU d'un article.", field: 'imei2' };
+  }
+
   if (!isUnitStatus(d.status)) return { error: 'Statut invalide.', field: 'status' };
 
   const assignee = d.assignee?.trim() ?? '';
@@ -1639,6 +1709,7 @@ function validateUnit(
     fields: {
       serial,
       ...(imei !== undefined ? { imei } : {}),
+      ...(imei2 !== undefined ? { imei2 } : {}),
       status: d.status,
       // L'attributaire n'a de sens que pour un appareil attribué.
       ...(d.status === 'assigned' ? { assignee } : {}),
@@ -1702,6 +1773,7 @@ export function updateUnit(id: string, patch: UpdateUnitPatch): UnitResult {
     {
       serial: patch.serial ?? current.serial,
       imei: patch.imei ?? current.imei,
+      imei2: patch.imei2 ?? current.imei2,
       status,
       // Passage à « Attribué » sans attributaire fourni : on reprend l'éventuel attributaire actuel.
       assignee: patch.assignee ?? current.assignee,
@@ -1711,7 +1783,7 @@ export function updateUnit(id: string, patch: UpdateUnitPatch): UnitResult {
   );
   if ('error' in v) return v;
 
-  const { imei: _i, assignee: _a, note: _n, ...base } = current;
+  const { imei: _i, imei2: _i2, assignee: _a, note: _n, ...base } = current;
   const unit: Unit = { ...base, ...v.fields, updatedAt: Date.now() };
   const snap = snapshot();
   applyUnit(current, unit);
@@ -2056,7 +2128,7 @@ export function consumePendingCountScan(countId: string): string | null {
 }
 
 /** Champ d'un formulaire d'appareil rempli par le scanner (`/scan?pick=…`). */
-export type PickTarget = 'serial' | 'imei';
+export type PickTarget = 'serial' | 'imei' | 'imei2';
 
 /** Code lu par le scanner en mode « sélection », transmis au formulaire au retour. */
 export function setPendingPick(target: PickTarget, code: string): void {
@@ -2097,6 +2169,7 @@ export type ImportRecord = {
   folder?: string;
   serial?: string;
   imei?: string;
+  imei2?: string;
   status?: UnitStatus;
   assignee?: string;
   note?: string;
@@ -2179,7 +2252,7 @@ class ImportIndex implements ItemCodeLookup, UnitLookup {
   private itemLoose = new CountSet(); // looseKey (isItemCode)
   private itemImeis = new CountSet(); // imeiForm (isItemImei)
   private unitSerial = new Map<string, Ranked>(); // serialKey
-  private unitImei = new Map<string, Ranked>(); // IMEI
+  private unitImei = new Map<string, Ranked>(); // IMEI 1 et IMEI 2
   private unitSerialDigits = new Map<string, Ranked>(); // imeiDigits(serialKey)
   private unitLoose = new Set<string>(); // looseKey(serial) (isUnitCode)
   private names = new Map<string, string>();
@@ -2229,6 +2302,7 @@ class ImportIndex implements ItemCodeLookup, UnitLookup {
     const sd = imeiDigits(sk);
     if (!this.unitSerialDigits.has(sd)) this.unitSerialDigits.set(sd, r);
     if (u.imei !== undefined && !this.unitImei.has(u.imei)) this.unitImei.set(u.imei, r);
+    if (u.imei2 !== undefined && !this.unitImei.has(u.imei2)) this.unitImei.set(u.imei2, r);
     this.unitLoose.add(looseKey(u.serial));
   }
 
@@ -2369,12 +2443,13 @@ function planImport(records: readonly ImportRecord[]): ImportPlan {
         continue;
       }
       const imeiNorm = rec.imei?.trim() ? normalizeImei(rec.imei) : undefined;
-      if (imeiNorm?.imei !== undefined) {
-        const dupImeiRow = fileImeis.get(imeiNorm.imei);
-        if (dupImeiRow !== undefined) {
-          skip(rec.row, `IMEI en double dans le fichier (déjà à la ligne ${dupImeiRow}).`);
-          continue;
-        }
+      const imei2Norm = rec.imei2?.trim() ? normalizeImei(rec.imei2) : undefined;
+      const dupImeiRow = [imeiNorm?.imei, imei2Norm?.imei]
+        .map((x) => (x !== undefined ? fileImeis.get(x) : undefined))
+        .find((r) => r !== undefined);
+      if (dupImeiRow !== undefined) {
+        skip(rec.row, `IMEI en double dans le fichier (déjà à la ligne ${dupImeiRow}).`);
+        continue;
       }
       let created: Item | undefined;
       if (!target) {
@@ -2404,7 +2479,7 @@ function planImport(records: readonly ImportRecord[]): ImportPlan {
       }
       const itemId = (target ?? created)!.id;
       const vu = validateUnit(
-        { serial: serialInput, imei: rec.imei, status: rec.status ?? 'in_stock', assignee: rec.assignee, note: rec.note },
+        { serial: serialInput, imei: rec.imei, imei2: rec.imei2, status: rec.status ?? 'in_stock', assignee: rec.assignee, note: rec.note },
         undefined,
         index
       );
@@ -2418,6 +2493,7 @@ function planImport(records: readonly ImportRecord[]): ImportPlan {
       newUnits.push(unit);
       fileSerials.set(sk, rec.row);
       if (unit.imei !== undefined) fileImeis.set(unit.imei, rec.row);
+      if (unit.imei2 !== undefined) fileImeis.set(unit.imei2, rec.row);
       if (created) {
         newItems.push(created);
         planned.set(key, { item: created, row: rec.row });
@@ -2818,6 +2894,7 @@ export function prepareRestore(data: unknown): { ok: true; plan: RestorePlan } |
   }
   if (r.movementsDropped > 0) warnings.push(`${fmtCount(r.movementsDropped, 'mouvement ignoré', 'mouvements ignorés')} (invalide ou au-delà des ${MAX_MOVEMENTS} derniers).`);
   if (r.sessionsDropped > 0) warnings.push(`${fmtCount(r.sessionsDropped, 'comptage invalide ignoré', 'comptages invalides ignorés')}.`);
+  if (r.imei2Dropped > 0) warnings.push(`${fmtCount(r.imei2Dropped, 'IMEI 2 invalide ou en double retiré', 'IMEI 2 invalides ou en double retirés')} (appareils conservés).`);
   if (r.photosDropped > 0) warnings.push(`${fmtCount(r.photosDropped, 'référence de photo invalide retirée', 'références de photo invalides retirées')}.`);
   if (r.qtyFixed > 0) warnings.push(`Stock de ${fmtCount(r.qtyFixed, 'article', 'articles')} recalculé d'après ses appareils en stock.`);
   warnings.push(...applyEntryRulesToRestore(next));

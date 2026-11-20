@@ -37,6 +37,7 @@ export default function ArticleDetail() {
       (!needle ||
         serialKey(u.serial).includes(key) ||
         (digits.length > 0 && u.imei !== undefined && u.imei.includes(digits)) ||
+        (digits.length > 0 && u.imei2 !== undefined && u.imei2.includes(digits)) ||
         (u.assignee ?? '').toLowerCase().includes(needle) ||
         (u.note ?? '').toLowerCase().includes(needle))
     );
@@ -354,12 +355,13 @@ function UnitsSection({
                 <Row
                   key={u.id}
                   onPress={() => router.push(`/unit/${u.id}`)}
-                  accessibilityLabel={`Numéro de série ${u.serial}${u.imei ? `, IMEI ${u.imei}` : ''}, ${UNIT_STATUS_LABELS[u.status]}${u.assignee ? `, attribué à ${u.assignee}` : ''}`}
+                  accessibilityLabel={`Numéro de série ${u.serial}${u.imei ? `, IMEI ${u.imei}` : ''}${u.imei2 ? `, IMEI 2 ${u.imei2}` : ''}, ${UNIT_STATUS_LABELS[u.status]}${u.assignee ? `, attribué à ${u.assignee}` : ''}`}
                   accessibilityHint="Ouvre la fiche de l'appareil"
                 >
                   <View style={{ flex: 1, gap: 2 }}>
                     <Text style={{ fontSize: 15, fontWeight: '600', color: colors.text }}>{u.serial}</Text>
                     {u.imei !== undefined && <Muted>IMEI {u.imei}</Muted>}
+                    {u.imei2 !== undefined && <Muted>IMEI 2 {u.imei2}</Muted>}
                     {u.assignee !== undefined && <Muted>Attribué à {u.assignee}</Muted>}
                     <UnitStatusChip status={u.status} />
                   </View>

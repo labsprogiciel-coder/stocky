@@ -60,7 +60,8 @@ const deviceLabel = (u: Unit) => {
 };
 
 /**
- * Numéro de série ou IMEI de la boîte déjà enregistré : message à afficher
+ * Numéro de série, IMEI 1 ou IMEI 2 de la boîte déjà enregistré (comme
+ * numéro de série, IMEI 1 ou IMEI 2 d'un appareil) : message à afficher
  * (`null` si aucun).
  */
 export function boxDuplicateError(a: BoxAnalysis): string | null {
@@ -72,37 +73,34 @@ export function boxDuplicateError(a: BoxAnalysis): string | null {
   return null;
 }
 
-export const BOX_IMEI2_PREFIX = 'IMEI 2 : ';
-
 /**
- * Note de l'appareil : note existante, puis « IMEI 2 : … ». Au-delà de
- * `NOTE_MAX_LENGTH`, la note existante est raccourcie (l'IMEI 2 est gardé entier).
+ * IMEI de l'appareil : IMEI 1 (champ « IMEI ») et IMEI 2 (champ « IMEI 2 »,
+ * téléphone double SIM). Choix documenté : un IMEI 2 lu sans IMEI 1 devient
+ * l'IMEI 1 (l'analyse de l'étiquette le fait déjà ; répété ici par sûreté),
+ * puisqu'un IMEI 2 seul est refusé par `addUnit`. Un IMEI 2 égal à l'IMEI 1
+ * est ignoré.
  */
-export function boxNote(imei2: string | null, existing?: string): string | undefined {
-  const base = (existing ?? '').trim();
-  if (!imei2) return base || undefined;
-  const tail = `${BOX_IMEI2_PREFIX}${imei2}`;
-  if (base.includes(tail)) return base.slice(0, NOTE_MAX_LENGTH);
-  if (!base) return tail;
-  const sep = ' · ';
-  const room = NOTE_MAX_LENGTH - tail.length - sep.length;
-  if (room <= 1) return tail;
-  const head = base.length > room ? `${base.slice(0, room - 1).trimEnd()}…` : base;
-  return `${head}${sep}${tail}`;
+export function boxImeis(a: Pick<BoxAnalysis, 'imei1' | 'imei2'>): { imei?: string; imei2?: string } {
+  const imei = a.imei1 || a.imei2 || undefined;
+  const imei2 = a.imei1 && a.imei2 && a.imei2 !== a.imei1 ? a.imei2 : undefined;
+  return { ...(imei ? { imei } : {}), ...(imei2 ? { imei2 } : {}) };
 }
 
 /**
  * Ajoute l'appareil de la boîte à l'article `itemId` : numéro de série retenu,
- * IMEI 1 (champ IMEI), IMEI 2 dans la note, statut « En stock ».
+ * IMEI 1 et IMEI 2 dans leurs champs (`boxImeis`), statut « En stock ». La
+ * note saisie (`opts.note`) est enregistrée telle quelle (l'IMEI 2 n'y est
+ * plus ajouté), raccourcie seulement au-delà de `NOTE_MAX_LENGTH`.
  */
 export function addDeviceFromBox(itemId: string, a: BoxAnalysis, opts: { note?: string } = {}): UnitResult {
   if (!a.serial) return { error: "Choisissez le numéro de série de l'appareil (touchez le bon code).", field: 'serial' };
   const dup = boxDuplicateError(a);
   if (dup) return { error: dup, field: 'serial' };
-  const note = boxNote(a.imei2, opts.note);
+  const raw = opts.note?.trim() ?? '';
+  const note = raw.length > NOTE_MAX_LENGTH ? `${raw.slice(0, NOTE_MAX_LENGTH - 1).trimEnd()}…` : raw;
   return addUnit(itemId, {
     serial: a.serial.value,
-    ...(a.imei1 ? { imei: a.imei1 } : {}),
+    ...boxImeis(a),
     status: 'in_stock',
     ...(note ? { note } : {}),
   });
