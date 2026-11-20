@@ -439,10 +439,32 @@ function toCountSession(v: unknown): CountSession | null {
   let unitSnapshot: Record<string, Unit> | undefined;
   if (isRecord(v.unitSnapshot)) {
     unitSnapshot = {};
+    const candidates: [string, Unit][] = [];
     for (const [unitId, u] of Object.entries(v.unitSnapshot)) {
       // Un IMEI 2 invalide est retiré de la copie, l'appareil est conservé.
       const cu = withoutInvalidImei2(u);
-      if (isSafeKey(unitId) && isUnit(cu) && cu.id === unitId) unitSnapshot[unitId] = cu;
+      if (isSafeKey(unitId) && isUnit(cu) && cu.id === unitId) candidates.push([unitId, cu]);
+    }
+    // Même règle qu'au chargement des unités : un IMEI 2 qui reprend l'IMEI 1 ou
+    // le numéro de série (forme IMEI) d'un appareil de la copie, ou l'IMEI 2 d'un
+    // appareil précédent, est retiré ; l'appareil est conservé.
+    const primaryCodes = new Set<string>();
+    for (const [, u] of candidates) {
+      primaryCodes.add(imeiDigits(serialKey(u.serial)));
+      if (u.imei !== undefined) primaryCodes.add(u.imei);
+    }
+    const seenImei2 = new Set<string>();
+    for (const [unitId, u0] of candidates) {
+      let u = u0;
+      if (u.imei2 !== undefined) {
+        if (primaryCodes.has(u.imei2) || seenImei2.has(u.imei2)) {
+          const { imei2: _drop, ...rest } = u;
+          u = rest;
+        } else {
+          seenImei2.add(u.imei2);
+        }
+      }
+      unitSnapshot[unitId] = u;
     }
   }
   return {

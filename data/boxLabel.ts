@@ -135,13 +135,16 @@ export function gtinValid(digits: string): boolean {
 }
 
 /**
- * Clé de dédoublonnage d'un code lu : chiffres seuls (espaces et tirets
- * retirés, EAN-13 commençant par 0 = UPC-A), sinon `serialKey`.
+ * Clé de dédoublonnage d'un code lu. Espaces et tirets ne sont ignorés que
+ * pour un IMEI (15 chiffres, clé de Luhn) ou un code produit (8/12/13/14
+ * chiffres, clé GTIN ; EAN-13 commençant par 0 = UPC-A) ; sinon `serialKey`
+ * (« 123-456 » et « 123456 » restent deux numéros de série distincts).
  */
 export function boxCodeKey(data: string): string {
   const t = typeof data === 'string' ? data.trim() : '';
   const d = imeiDigits(t);
-  if (/^\d+$/.test(d)) return /^0\d{12}$/.test(d) ? d.slice(1) : d;
+  if (/^\d{15}$/.test(d) && luhnValid(d)) return d;
+  if (gtinValid(d)) return /^0\d{12}$/.test(d) ? d.slice(1) : d;
   return serialKey(t);
 }
 
@@ -175,9 +178,13 @@ function cleanValue(s: string): string {
 }
 
 // Clés reconnues (en tête de champ). Ordre : la plus spécifique d'abord.
+// Numéro de série : après « : » ou « = », un tiret fait partie de la valeur
+// s'il est collé à la suite (« SN: -AB123 » → « -AB123 ») ; suivi d'espaces, c'est
+// un séparateur (« SN : - AB123 » → « AB123 »). Sans « : » ni « = », un tiret collé
+// ou entouré d'espaces est un séparateur (« SN-AB123 », « SN - AB123 » → « AB123 »).
 const KEY_RULES: readonly { key: string; re: RegExp }[] = [
   // « (S) Serial No. », « S/N », « SN », « Serial No », « N° de série », « Numéro de série »…
-  { key: 'SN', re: /^(?:\(S\)\s*)?(?:S\/N|SN|SERIAL(?:\s*(?:NO\.?|NUMBER|NUM\.?|N°|#))?|N°\s*DE\s*S[EÉ]RIE|NUM[EÉ]RO\s*DE\s*S[EÉ]RIE|NO\.?\s*DE\s*S[EÉ]RIE)(?=$|[\s:=#.\-])[\s:=#.\-]*/i },
+  { key: 'SN', re: /^(?:\(S\)\s*)?(?:S\/N|SN|SERIAL(?:\s*(?:NO\.?|NUMBER|NUM\.?|N°|#))?|N°\s*DE\s*S[EÉ]RIE|NUM[EÉ]RO\s*DE\s*S[EÉ]RIE|NO\.?\s*DE\s*S[EÉ]RIE)(?=$|[\s:=#.\-])(?:[\s#.]*[:=][\s:=]*(?:-\s+)?|[\s#.\-]*)/i },
   { key: 'MEID', re: /^MEID(?=$|[\s:=#.\d])[\s:=#.]*/i },
   // IMEISV (IMEI + version logicielle, 16 chiffres) : identifiant, pas un numéro de série.
   { key: 'IMEISV', re: /^(?:IMEI\s*SV|SVN)(?=$|[\s:=#.\d])[\s:=#.]*/i },
@@ -232,9 +239,11 @@ const gs1Ai = (s: string, i: number): string | null => {
 
 /**
  * Chaîne GS1 : forme lisible « (01)…(21)… » ou forme brute (préfixe « ]C1 » /
- * « ]d2 » / « ]Q3 », séparateur GS \x1d). `null` si ce n'en est pas une.
+ * « ]d2 » / « ]Q3 », séparateur GS \x1d). `null` si ce n'en est pas une. Au-delà
+ * de `BOX_MAX_FIELDS_PER_CODE` champs : les champs déjà lus sont gardés et
+ * `truncated` vaut `true` (seulement s'il reste des données).
  */
-function parseGs1(raw: string): Parsed[] | null {
+function parseGs1(raw: string): { parts: Parsed[]; truncated: boolean } | null {
   const t = raw.trim();
   if (/^\(\d{2,3}\)/.test(t)) {
     const out: Parsed[] = [];
@@ -249,9 +258,9 @@ function parseGs1(raw: string): Parsed[] | null {
       if (typeof spec === 'number' ? v.length !== spec || !/^\d+$/.test(v) : v.length > spec[0]) return null;
       out.push(gs1Field(ai, v));
       pos = re.lastIndex;
-      if (out.length >= BOX_MAX_FIELDS_PER_CODE) break;
+      if (out.length >= BOX_MAX_FIELDS_PER_CODE && pos < t.length) return { parts: out, truncated: true };
     }
-    return out.length > 0 && pos >= t.length ? out : null;
+    return out.length > 0 && pos >= t.length ? { parts: out, truncated: false } : null;
   }
   const prefixed = /^\](?:C1|d2|Q3|e0)/.test(t);
   let s = prefixed ? t.slice(3) : t;
@@ -278,9 +287,9 @@ function parseGs1(raw: string): Parsed[] | null {
     }
     out.push(gs1Field(ai, v));
     while (s[i] === '\x1d') i++;
-    if (out.length >= BOX_MAX_FIELDS_PER_CODE) break;
+    if (out.length >= BOX_MAX_FIELDS_PER_CODE && i < s.length) return { parts: out, truncated: true };
   }
-  return out.length > 0 ? out : null;
+  return out.length > 0 ? { parts: out, truncated: false } : null;
 }
 
 /** Contenu JSON d'un QR (« {"imei1":"…","sn":"…"} ») : champs « clé:valeur ». `null` sinon. */
@@ -307,10 +316,28 @@ function parseJsonFields(raw: string): string[] | null {
 /** QR « fonctionnel » (Wi-Fi, carte de visite, SMS…) : aucun code d'appareil. */
 const FUNCTIONAL_QR = /^(?:WIFI:|MECARD:|BEGIN:VCARD|SMSTO:|MATMSG:)/i;
 
+const BOX_TOO_LONG = `Code trop long (${BOX_MAX_RAW_LENGTH} caractères max) : non pris en compte`;
+const BOX_FUNCTIONAL_QR = 'QR Wi-Fi / contact ignoré';
+
+/**
+ * Code lu à écarter entièrement (jamais dans la session, l'analyse ni la
+ * liste) : message court à afficher (sans le contenu du code), sinon `null`.
+ * Trop long : plus de `BOX_MAX_RAW_LENGTH` caractères une fois normalisé et
+ * débarrassé des espaces de bordure. QR fonctionnel : Wi-Fi (mot de passe),
+ * carte de visite, SMS, e-mail.
+ */
+export function boxCheckCode(data: string): string | null {
+  if (typeof data !== 'string') return null;
+  const t = normalizeBoxText(data).trim();
+  if (t.length > BOX_MAX_RAW_LENGTH) return BOX_TOO_LONG;
+  if (FUNCTIONAL_QR.test(t)) return BOX_FUNCTIONAL_QR;
+  return null;
+}
+
 /** Découpe le contenu d'un code en champs (au plus `BOX_MAX_FIELDS_PER_CODE`). */
 function splitFields(raw: string): { parts: (string | Parsed)[]; truncated: boolean } {
   const gs1 = parseGs1(raw);
-  if (gs1) return { parts: gs1, truncated: false };
+  if (gs1) return gs1;
   const json = parseJsonFields(raw);
   if (json) return { parts: json.slice(0, BOX_MAX_FIELDS_PER_CODE), truncated: json.length > BOX_MAX_FIELDS_PER_CODE };
   const out: string[] = [];
@@ -479,18 +506,16 @@ function buildFields(codes: readonly ScannedCode[], itemName?: (code: string) =>
   for (let ci = 0; ci < n; ci++) {
     const c = codes[ci];
     let raw = c && typeof c.data === 'string' ? c.data : '';
-    if (raw.length > BOX_MAX_RAW_LENGTH) {
-      raw = raw.slice(0, BOX_MAX_RAW_LENGTH);
-      truncated = true;
+    const rejected = boxCheckCode(raw);
+    if (rejected !== null) {
+      // Code trop long (jamais tronqué : un préfixe donnerait un numéro partiel) ;
+      // QR Wi-Fi (mot de passe !), carte de visite… : écartés entièrement.
+      if (rejected === BOX_TOO_LONG) truncated = true;
+      continue;
     }
     raw = normalizeBoxText(raw);
     const symbology = c && typeof c.type === 'string' && c.type ? c.type.toLowerCase().slice(0, 32) : undefined;
     const product = symbology !== undefined && PRODUCT_SYMBOLOGY.test(symbology);
-    if (FUNCTIONAL_QR.test(raw.trim())) {
-      // Wi-Fi (mot de passe !), carte de visite… : jamais découpé en candidats.
-      fields.push({ id: `${ci}.0`, codeIndex: ci, multi: false, ...(symbology ? { symbology } : {}), value: cleanValue(raw).slice(0, 64), role: 'other', score: 0, reason: 'QR Wi-Fi / contact (pas un code d\'appareil)' });
-      continue;
-    }
     const split = splitFields(raw);
     if (split.truncated) truncated = true;
     const multi = split.parts.length > 1;
@@ -587,13 +612,15 @@ export function analyzeBoxCodes(codes: readonly ScannedCode[], opts: BoxAnalyzeO
     const notChosen = (f: BoxField) => chosenKey === null || (serialKey(f.value) !== chosenKey && imeiDigits(f.value) !== imeiDigits(chosen!.value));
 
     // IMEI : emplacements explicites d'abord, sinon ordre de lecture ; distincts.
-    const imeis: BoxField[] = [];
-    const seenImei = new Set<string>();
+    // Même IMEI lu avec et sans emplacement : l'emplacement explicite l'emporte.
+    const byImei = new Map<string, BoxField>();
     for (const f of fields) {
-      if (f.role !== 'imei' || !notChosen(f) || seenImei.has(f.value)) continue;
-      seenImei.add(f.value);
-      imeis.push(f);
+      if (f.role !== 'imei' || !notChosen(f)) continue;
+      const prev = byImei.get(f.value);
+      if (!prev || (!prev.imeiSlot && f.imeiSlot)) byImei.set(f.value, f);
     }
+    const keptImei = new Set(byImei.values());
+    const imeis = fields.filter((f) => keptImei.has(f));
     let imei1 = imeis.find((f) => f.imeiSlot === 1) ?? null;
     let imei2 = imeis.find((f) => f.imeiSlot === 2 && f !== imei1) ?? null;
     const rest = imeis.filter((f) => f !== imei1 && f !== imei2);
@@ -661,6 +688,29 @@ export function boxFieldChip(a: BoxAnalysis, f: BoxField): BoxChip {
   return 'other';
 }
 
+/**
+ * Lignes de la liste affichée : une même valeur (`serialKey`) lue dans
+ * plusieurs codes n'est listée qu'une fois, à la place de sa première lecture.
+ * Entre doublons, la ligne gardée est celle qui porte le rôle retenu (n° de
+ * série, IMEI 1, IMEI 2, code produit) plutôt qu'une ligne « Autre ».
+ */
+export function boxListFields(a: BoxAnalysis): BoxField[] {
+  const rows: BoxField[] = [];
+  const at = new Map<string, number>();
+  for (const f of a.fields) {
+    const k = serialKey(f.value);
+    if (!k) continue;
+    const i = at.get(k);
+    if (i === undefined) {
+      at.set(k, rows.length);
+      rows.push(f);
+    } else if (boxFieldChip(a, rows[i]) === 'other' && boxFieldChip(a, f) !== 'other') {
+      rows[i] = f;
+    }
+  }
+  return rows;
+}
+
 // ── Session (écran « Scanner une boîte ») ─────────────────────────────────
 
 /** Délai pendant lequel les codes de la boîte précédente, encore visibles, sont ignorés. */
@@ -685,11 +735,13 @@ export function emptyBoxSession(): BoxSession {
 
 /**
  * Ajoute un code lu. Renvoie la MÊME session si rien ne change pour
- * l'utilisateur (doublon, code vide), pour que l'écran puisse ne réagir
+ * l'utilisateur (doublon, code vide, code refusé par `boxCheckCode`), pour que l'écran puisse ne réagir
  * (vibration, rendu) qu'aux codes nouveaux.
  */
 export function boxAddCode(s: BoxSession, code: ScannedCode, now: number = Date.now()): BoxSession {
-  const data = code && typeof code.data === 'string' ? normalizeBoxText(code.data.slice(0, BOX_MAX_RAW_LENGTH)).trim() : '';
+  // Code trop long ou QR fonctionnel : refusé en entier (`boxCheckCode` donne le message).
+  if (!code || typeof code.data !== 'string' || boxCheckCode(code.data) !== null) return s;
+  const data = normalizeBoxText(code.data).trim();
   if (!data) return s;
   const k = boxCodeKey(data);
   if (!k || s.keys.includes(k)) return s;
@@ -721,9 +773,40 @@ export function boxChooseSerial(s: BoxSession, fieldId: string | null): BoxSessi
 export function boxReset(s?: BoxSession, now?: number): BoxSession {
   const next = emptyBoxSession();
   if (!s || now === undefined) return next;
+  // Codes encore ignorés (toujours devant la caméra) : gardés, même si la liste est vide.
   const ignore: Record<string, number> = {};
+  for (const [k, last] of Object.entries(s.ignore)) if (now - last < BOX_SUPPRESS_GAP_MS) ignore[k] = last;
   for (const k of s.keys) ignore[k] = now;
   return { ...next, ignore };
+}
+
+/**
+ * Clés (`boxCodeKey`) des codes de l'étiquette en cours et des codes encore
+ * ignorés de la boîte précédente (lus à moins de `BOX_SUPPRESS_GAP_MS`).
+ */
+export function boxActiveKeys(s: BoxSession, now: number = Date.now()): string[] {
+  const out = [...s.keys];
+  for (const [k, last] of Object.entries(s.ignore)) if (now - last < BOX_SUPPRESS_GAP_MS && !out.includes(k)) out.push(k);
+  return out;
+}
+
+/**
+ * `true` si le code (même normalisation que `boxAddCode`) est un code de la
+ * boîte précédente encore ignoré (lu à moins de `BOX_SUPPRESS_GAP_MS`).
+ */
+export function boxIsIgnored(s: BoxSession, data: string, now: number = Date.now()): boolean {
+  if (typeof data !== 'string') return false;
+  const k = boxCodeKey(normalizeBoxText(data).trim());
+  if (!k || s.keys.includes(k)) return false;
+  const last = s.ignore[k];
+  return last !== undefined && now - last < BOX_SUPPRESS_GAP_MS;
+}
+
+/** `true` si le code (même normalisation que `boxAddCode`) est déjà dans la liste. */
+export function boxHasCode(s: BoxSession, data: string): boolean {
+  if (typeof data !== 'string') return false;
+  const k = boxCodeKey(normalizeBoxText(data));
+  return k !== '' && s.keys.includes(k);
 }
 
 /** Analyse de la session (choix de l'utilisateur compris). */

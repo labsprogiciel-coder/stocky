@@ -38,16 +38,24 @@ import { openProSection } from '../components/ProNotice';
 import {
   BOX_CHIP_LABELS,
   analyzeBoxSession,
+  BOX_MAX_CODES,
+  boxActiveKeys,
   boxAddCode,
+  boxCheckCode,
   boxChooseSerial,
+  boxCodeKey,
   boxFieldChip,
+  boxHasCode,
+  boxListFields,
+  boxIsIgnored,
   boxReset,
   emptyBoxSession,
+  normalizeBoxText,
   type BoxAnalysis,
   type BoxChip,
   type BoxSession,
 } from '../data/boxLabel';
-import { addDeviceFromBox, analyzeBoxForStore, boxDuplicateError, boxImeis, resolveBoxArticle } from '../data/boxDevice';
+import { addDeviceFromBox, analyzeBoxForStore, boxDuplicateError, boxImeis, boxTargetItem, resolveBoxArticle } from '../data/boxDevice';
 import {
   UNIT_STATUS_LABELS,
   addUnit,
@@ -66,7 +74,6 @@ import {
   setCountIndex,
   setPendingCountScan,
   setPendingPick,
-  serialKey,
   unitLimitError,
   updateUnit,
   type Item,
@@ -152,6 +159,12 @@ export default function Scan() {
   // seulement le cadre : les autres codes d'une étiquette (IMEI 1, IMEI 2…)
   // et le code-barres de la boîte ne sont traités qu'une fois.
   const loopSeenRef = useRef<Set<string>>(new Set());
+  // Retour de « Scanner une boîte » vers la boucle d'ajout : clés (`boxCodeKey`) des
+  // codes de la boîte, encore visibles ou récemment ignorés, à ne pas reproposer.
+  const loopBoxKeysRef = useRef<Set<string>>(new Set());
+  // « Scanner une boîte » : codes caméra déjà écartés (QR Wi-Fi, code trop long),
+  // message affiché une seule fois par code pour ne pas masquer les autres.
+  const boxRejectedRef = useRef<Set<string>>(new Set());
   // Hors boucle : code qui vient d'être traité, ignoré tant qu'il reste visible.
   const suppressRef = useRef<{ code: string; lastSeen: number } | null>(null);
   // Écran recouvert (fiche appareil, autre scanner…) : caméra démontée, aucune lecture.
@@ -219,16 +232,7 @@ export default function Scan() {
   const boxAnalysis = boxMode ? analyzeBoxForStore(boxSession) : null;
   const boxResolved = boxAnalysis ? resolveBoxArticle(boxAnalysis) : null;
   const boxChosenRaw = boxItemId ? getItem(boxItemId) : undefined;
-  const boxAutoRaw = !boxItemId && boxAutoId ? getItem(boxAutoId) : undefined;
-  const boxItem: Item | null = boxChosenRaw?.serialized
-    ? boxChosenRaw
-    : boxItemId
-    ? null
-    : boxResolved?.kind === 'serialized'
-    ? boxResolved.item
-    : boxResolved?.kind === 'none' && boxAutoRaw?.serialized
-    ? boxAutoRaw
-    : null;
+  const boxItem: Item | null = boxResolved ? boxTargetItem(boxResolved, boxItemId, boxAutoId) : null;
   const boxDup = boxAnalysis ? boxDuplicateError(boxAnalysis) : null;
 
   // ── qty validation ────────────────────────────────────────────────────────
@@ -402,13 +406,32 @@ export default function Scan() {
     applyBox(boxReset(boxRef.current, Date.now()));
   };
 
+  /**
+   * Analyse de la session à jour (synchrone) et son article cible. Un code lu
+   * par la caméra entre le dernier rendu et l'appui peut changer l'article :
+   * dans ce cas rien n'est fait, l'aperçu est mis à jour et un nouvel appui est demandé.
+   */
+  const boxSnapshot = (): { a: BoxAnalysis; target: Item } | null => {
+    if (!boxItem) return null;
+    const a = analyzeBoxForStore(boxRef.current);
+    const target = boxTargetItem(resolveBoxArticle(a), boxItemId, boxAutoId);
+    if (!target || target.id !== boxItem.id) {
+      setBoxSession(boxRef.current);
+      setFeedback({ kind: 'info', text: "L'article a changé avec le dernier code lu : vérifiez-le, puis touchez de nouveau le bouton." });
+      return null;
+    }
+    return { a, target };
+  };
+
   const addFromBox = () => {
     if (committingRef.current || !boxItem) return;
     // Session à jour (synchrone) : un double appui ne réenregistre pas la boîte.
-    const a = analyzeBoxForStore(boxRef.current);
+    const snap = boxSnapshot();
+    if (!snap) return;
+    const { a, target } = snap;
     if (!a.serial) return;
     committingRef.current = true;
-    const res = addDeviceFromBox(boxItem.id, a);
+    const res = addDeviceFromBox(target.id, a);
     committingRef.current = false;
     if (res.error !== undefined) {
       setFeedback({ kind: 'error', text: res.error, ...(res.limit === 'units' ? { pro: true } : {}) });
@@ -422,13 +445,14 @@ export default function Scan() {
 
   /** « Modifier » : formulaire d'appareil prérempli (numéro de série, IMEI 1, IMEI 2). */
   const editBox = () => {
-    if (!boxItem) return;
-    const a = analyzeBoxForStore(boxRef.current);
+    const snap = boxSnapshot();
+    if (!snap) return;
+    const { a, target } = snap;
     const { imei, imei2 } = boxImeis(a);
-    boxEditRef.current = { before: new Set(getUnits(boxItem.id).map((u) => u.id)), itemId: boxItem.id, explicit: boxItemId !== null };
+    boxEditRef.current = { before: new Set(getUnits(target.id).map((u) => u.id)), itemId: target.id, explicit: boxItemId !== null };
     router.push({
       pathname: '/unit/new',
-      params: { itemId: boxItem.id, serial: a.serial?.value ?? '', ...(imei ? { imei } : {}), ...(imei2 ? { imei2 } : {}) },
+      params: { itemId: target.id, serial: a.serial?.value ?? '', ...(imei ? { imei } : {}), ...(imei2 ? { imei2 } : {}) },
     });
   };
 
@@ -437,6 +461,8 @@ export default function Scan() {
     if (unlockTimerRef.current) clearTimeout(unlockTimerRef.current);
     unlockTimerRef.current = null;
     loopSeenRef.current = new Set();
+    loopBoxKeysRef.current = new Set();
+    boxRejectedRef.current = new Set();
     pendingRef.current = null;
     setPendingSerial(null);
     setAddTargetId(null);
@@ -456,10 +482,13 @@ export default function Scan() {
 
   const finishBox = () => {
     const back = boxReturnAddId;
+    boxRejectedRef.current = new Set();
     if (back) {
-      // Retour à la boucle « Ajouter des appareils » : les codes de cette boîte,
-      // encore visibles, n'y sont pas reproposés.
+      // Retour à la boucle « Ajouter des appareils » : les codes de cette boîte
+      // (liste en cours et codes de la boîte précédente encore ignorés après un
+      // ajout ou « Boîte suivante »), encore visibles, n'y sont pas reproposés.
       loopSeenRef.current = new Set(boxRef.current.codes.map((c) => c.data));
+      loopBoxKeysRef.current = new Set(boxActiveKeys(boxRef.current, Date.now()));
       setAddTargetId(back);
       setAddedCount((n) => n + boxAdded);
     } else if (launchedBox || launchedAddId) {
@@ -484,13 +513,41 @@ export default function Scan() {
     const data = raw.trim();
     if (!data || !focused) return;
     if (boxMode) {
+      // Code trop long, QR Wi-Fi / contact : écarté entièrement (message sans son contenu).
+      const rejected = boxCheckCode(data);
+      if (rejected !== null) {
+        if (source === 'manual') {
+          setManualText('');
+          setManualOpen(false);
+          setFeedback({ kind: 'info', text: rejected });
+          return;
+        }
+        // Caméra : une seule fois par code, et sans remplacer un message d'ajout ou d'erreur.
+        if (boxRejectedRef.current.has(data)) return;
+        if (boxRejectedRef.current.size >= 50) boxRejectedRef.current = new Set();
+        boxRejectedRef.current.add(data);
+        setFeedback((f) => (f && f.kind !== 'info' ? f : { kind: 'info', text: rejected }));
+        return;
+      }
       // Chaque code distinct de l'étiquette est gardé ; les doublons sont ignorés sans bruit.
-      const added = applyBox(boxAddCode(boxRef.current, { data, ...(symbology ? { type: symbology } : {}) }));
+      const before = boxRef.current;
+      const added = applyBox(boxAddCode(before, { data, ...(symbology ? { type: symbology } : {}) }));
       if (source === 'manual') {
         // Retour à la liste : l'utilisateur voit le rôle attribué au code saisi.
         setManualText('');
         setManualOpen(false);
-        setFeedback({ kind: 'info', text: added ? `Code ajouté à la liste : ${data}` : `Code déjà dans la liste : ${data}` });
+        setFeedback({
+          kind: 'info',
+          text: added
+            ? `Code ajouté à la liste : ${data}`
+            : boxHasCode(before, data)
+            ? `Code déjà dans la liste : ${data}`
+            : boxIsIgnored(before, data)
+            ? `Code de la boîte précédente, encore visible : non ajouté. Réessayez dans un instant.`
+            : before.codes.length >= BOX_MAX_CODES
+            ? `Liste pleine (${BOX_MAX_CODES} codes) : code non ajouté. Touchez le bon code dans la liste, ou « Boîte suivante » pour recommencer.`
+            : `Code non ajouté : ${data}`,
+        });
         return;
       }
       if (added) {
@@ -503,6 +560,11 @@ export default function Scan() {
     if (source === 'camera') {
       // Dans une boucle, chaque code n'est lu qu'une fois.
       if (loop && loopSeenRef.current.has(data)) return;
+      // Ajout d'appareils : un QR Wi-Fi / contact ou un code trop long n'est jamais
+      // un numéro de série ; écarté sans être proposé (ni affiché).
+      if (addLoop && boxCheckCode(data) !== null) return;
+      // Codes de la boîte tout juste terminée (même clé que « Scanner une boîte »).
+      if (loop && loopBoxKeysRef.current.size > 0 && loopBoxKeysRef.current.has(boxCodeKey(normalizeBoxText(data)))) return;
       // Hors boucle : le code tout juste traité, encore dans le champ, est ignoré.
       const sup = suppressRef.current;
       if (!loop && sup && sup.code === data) {
@@ -580,6 +642,7 @@ export default function Scan() {
   const startAddLoop = (target: Item) => {
     // Le code-barres de l'article, encore dans le cadre, ne doit pas être ajouté.
     loopSeenRef.current = new Set(code ? [code] : []);
+    loopBoxKeysRef.current = new Set();
     setAddTargetId(target.id);
     setAddedCount(0);
     setFeedback(null);
@@ -594,6 +657,7 @@ export default function Scan() {
     if (unlockTimerRef.current) clearTimeout(unlockTimerRef.current);
     unlockTimerRef.current = null;
     loopSeenRef.current = new Set();
+    loopBoxKeysRef.current = new Set();
     pendingRef.current = null;
     setPendingSerial(null);
     setAddTargetId(null);
@@ -1306,14 +1370,9 @@ function BoxCodeList({ analysis, onChoose }: { analysis: BoxAnalysis; onChoose: 
       </Text>
     );
   }
-  // Une même valeur lue dans deux codes (ex. QR + Code 128) n'est listée qu'une fois.
-  const seen = new Set<string>();
-  const rows = analysis.fields.filter((f) => {
-    const k = serialKey(f.value);
-    if (!k || seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  });
+  // Une même valeur lue dans deux codes (ex. QR + Code 128) n'est listée qu'une fois,
+  // avec la pastille du rôle retenu.
+  const rows = boxListFields(analysis);
   return (
     <View style={{ gap: 4 }}>
       <Text style={{ fontSize: 12, color: colors.muted }}>Touchez un code pour en faire le numéro de série.</Text>
