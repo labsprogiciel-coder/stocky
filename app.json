@@ -92,8 +92,9 @@
     },
     "extra": {
       "licensePublicKey": "A_REMPLACER_par_la_cle_publique_de_scripts/license.mjs_keygen",
-      "storoApiBase": "https://storo.labsprogiciel.workers.dev/api/v1",
+      "storoApiBase": "https://storo.progiciellabs.xyz/api/v1",
       "storoAllowedHosts": [
+        "storo.progiciellabs.xyz",
         "storo.labsprogiciel.workers.dev",
         "storo-preview.labsprogiciel.workers.dev"
       ],
