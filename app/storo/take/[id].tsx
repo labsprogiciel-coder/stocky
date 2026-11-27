@@ -3,7 +3,7 @@
  * l'aveugle (le stock Storo n'est pas affiché) des articles du site ;
  * « Valider » enregistre une saisie envoyée à Storo, « Passer » n'envoie rien.
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Alert as InlineAlert, Btn, Card, EmptyState, H2, Icon, Muted, Progress, Row, Screen, Stepper } from '../../../components/ui';
@@ -31,18 +31,31 @@ export default function OrgTakeScreen() {
   const take = getTake(id);
   const list = take ? takeItems(getAllOrgItems(), take.siteId) : [];
   const count = getCount(id);
-  const [idx, setIdx] = useState(() => Math.min(count?.idx ?? 0, Math.max(0, list.length - 1)));
-  const cur = list[Math.min(idx, Math.max(0, list.length - 1))];
+  // Article courant tenu par son identifiant : une synchronisation peut ajouter,
+  // supprimer ou renommer des articles (liste triée) sans changer l'article saisi.
+  const fallbackIdx = Math.min(count?.idx ?? 0, Math.max(0, list.length - 1));
+  const [curId, setCurId] = useState<string | null>(() => list[fallbackIdx]?.id ?? null);
+  const found = curId ? list.findIndex((x) => x.id === curId) : -1;
+  const idx = found >= 0 ? found : fallbackIdx;
+  const cur = list[idx];
   const entry = cur ? count?.entries[cur.id] : undefined;
   const [qty, setQty] = useState(entry?.status === 'Compté' ? entry.qty : 0);
   const [error, setError] = useState<string | null>(null);
   const [scanMsg, setScanMsg] = useState<string | null>(null);
   useSyncTimer(TAKE_TIMER_MS);
 
+  // Article courant disparu (ou liste reçue après l'ouverture) : nouvel article, saisie relue.
+  useEffect(() => {
+    if (!cur || cur.id === curId) return;
+    setCurId(cur.id);
+    const e = getCount(id)?.entries[cur.id];
+    setQty(e?.status === 'Compté' ? e.qty : 0);
+  }, [cur, curId, id]);
+
   const jumpTo = useCallback((i: number) => {
     const it = list[i];
     if (!it) return;
-    setIdx(i);
+    setCurId(it.id);
     setOrgCountIndex(id, i);
     const e = getCount(id)?.entries[it.id];
     setQty(e?.status === 'Compté' ? e.qty : 0);
@@ -76,7 +89,7 @@ export default function OrgTakeScreen() {
   const doneCount = statuses.filter((s) => s !== 'À compter').length;
 
   const save = (status: 'Compté' | 'Passé') => {
-    if (!cur) return;
+    if (!cur || cur.id !== curId) return;
     const err = recordCount(id, cur.id, qty, status);
     if (err) { setError(err); return; }
     const next = list.findIndex((it, i) => i > idx && countStatus(id, it.id) === 'À compter');

@@ -123,7 +123,7 @@ describe('applyPushResults', () => {
         { clientId: c2.clientId, status: 'error', error: { code: 'INTERNAL', message: 'boom' } },
       ],
     }, now);
-    expect(out).toEqual({ done: 2, parked: 1, retried: 1 });
+    expect(out).toEqual({ done: 2, parked: 1, retried: 1, saved: true });
     const left = env.orgStore.getOutboxRows();
     expect(left.map((r) => r.clientId)).toEqual([m2.clientId, c2.clientId]);
     expect(left[0]).toMatchObject({ state: 'error', error: { code: 'INSUFFICIENT_STOCK', message: 'Stock insuffisant dans Storo (disponible : 0).' } });

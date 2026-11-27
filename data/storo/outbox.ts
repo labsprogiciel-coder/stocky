@@ -68,21 +68,25 @@ function writable(): { deviceId: string; orgId: string } | string {
 
 // ── Mouvements (§8.2) ──────────────────────────────────────────────────────
 
-/** Entrée / Sortie de `n` sur un article Storo. Renvoie un message d'erreur ou null. */
-export function enqueueMovement(itemId: string, mode: 'Entrée' | 'Sortie', n: number): string | null {
+/**
+ * Ligne d'une Entrée / Sortie, ajoutée à `rows` (file actuelle) ; `without` :
+ * ligne remplacée (« Modifier »), exclue du stock disponible. Message d'erreur sinon.
+ */
+function buildMovement(itemId: string, mode: 'Entrée' | 'Sortie', n: number, rows: readonly OutboxRecord[], without?: OutboxRecord): OutboxRecord | string {
   const w = writable();
   if (typeof w === 'string') return w;
   const item = getOrgItem(itemId);
   if (!item) return 'Article introuvable.';
   if (!Number.isInteger(n) || n < 1) return 'La quantité doit être un entier supérieur à 0.';
   if (mode === 'Sortie') {
-    const available = displayedQty(itemId);
+    let available = displayedQty(itemId);
+    if (without && without.kind === 'movement' && without.state === 'pending' && without.orgId === getSyncMeta().orgId
+      && (without.body as PushMovement).itemId === itemId) available -= (without.body as PushMovement).qty;
     if (n > available) return `Stock insuffisant. Disponible : ${Math.max(0, available)}.`;
   }
-  const rows = getOutboxRows();
   if (rows.length >= OUTBOX_CAP) return OUTBOX_FULL;
   const clientId = movementClientId(w.deviceId, localUid('m'));
-  const row: OutboxRecord = {
+  return {
     clientId,
     orgId: w.orgId,
     kind: 'movement',
@@ -93,6 +97,13 @@ export function enqueueMovement(itemId: string, mode: 'Entrée' | 'Sortie', n: n
     state: 'pending',
     label: { itemName: item.name, sku: item.sku, ...(getSite(item.siteId)?.name ? { siteName: getSite(item.siteId)!.name } : {}), mode, qty: n },
   };
+}
+
+/** Entrée / Sortie de `n` sur un article Storo. Renvoie un message d'erreur ou null. */
+export function enqueueMovement(itemId: string, mode: 'Entrée' | 'Sortie', n: number): string | null {
+  const rows = getOutboxRows();
+  const row = buildMovement(itemId, mode, n, rows);
+  if (typeof row === 'string') return row;
   if (!commitOutbox([...rows, row])) return SAVE_ERROR;
   notifyEnqueued();
   return null;
@@ -116,16 +127,21 @@ export const isInFlight = (clientId: string): boolean => _inFlight.has(clientId)
 
 const rowsOf = (rows: readonly OutboxRecord[], takeId: string, itemId: string) =>
   rows.filter((r) => r.kind === 'count' && r.ref?.takeId === takeId && r.ref.itemId === itemId);
-const rowOf = (rows: readonly OutboxRecord[], takeId: string, itemId: string) => rowsOf(rows, takeId, itemId)[0];
 
 /** État d'un article dans un comptage Storo (liste de l'écran de comptage). */
 export function countStatus(takeId: string, itemId: string): OrgCountStatus {
   const e = getCount(takeId)?.entries[itemId];
   if (!e) return 'À compter';
   if (e.status === 'Passé') return 'Passé';
-  const row = rowOf(getOutboxRows(), takeId, itemId);
+  const rows = rowsOf(getOutboxRows(), takeId, itemId);
+  // Ligne de la saisie courante d'abord : une ancienne révision refusée ne la masque pas.
+  const orgId = getSyncMeta().orgId;
+  const cur = rows.find((r) => r.ref?.rev === e.rev && r.orgId === orgId);
+  if (cur) return cur.state === 'error' ? 'Refusé' : 'À envoyer';
+  if (e.sentRev !== undefined && e.sentRev === e.rev) return 'Envoyé';
+  const row = rows[0];
   if (row) return row.state === 'error' ? 'Refusé' : 'À envoyer';
-  return e.sentRev !== undefined && e.sentRev === e.rev ? 'Envoyé' : 'À compter';
+  return 'À compter';
 }
 
 function itemOfTake(takeId: string, itemId: string): { item: OrgItem; ref: string; siteName: string } | string {
@@ -238,27 +254,30 @@ export function retryRow(clientId: string): string | null {
 
 /** « Modifier » (mouvements) : la ligne est remplacée par une nouvelle (nouvel identifiant client). */
 export function editMovement(clientId: string, n: number): string | null {
-  const row = getOutboxRows().find((r) => r.clientId === clientId);
+  const rows = getOutboxRows();
+  const row = rows.find((r) => r.clientId === clientId);
   if (!row || row.kind !== 'movement') return 'Opération introuvable.';
   const body = row.body as PushMovement;
   const mode = body.type === 'reception' ? 'Entrée' : 'Sortie';
-  const err = discardRow(clientId);
-  if (err) return err;
-  const err2 = enqueueMovement(body.itemId, mode, n);
-  if (err2) {
-    // Remise de la ligne d'origine (même identifiant) si la nouvelle est refusée.
-    commitOutbox([...getOutboxRows(), row]);
-    return err2;
-  }
+  // Remplacement en un seul enregistrement : en cas d'échec, la ligne d'origine reste.
+  const base = rows.filter((r) => r !== row);
+  const next = buildMovement(body.itemId, mode, n, base, row);
+  if (typeof next === 'string') return next;
+  if (!commitOutbox([...base, next])) return SAVE_ERROR;
+  notifyEnqueued();
   return null;
 }
 
-/** Lignes refusées « aucun membre attribué » remises en attente (le téléphone vient d'être attribué). */
-export function unparkNoAttributedMember(): number {
+/**
+ * Lignes refusées « aucun membre attribué » remises en attente (le téléphone
+ * est attribué). `before` : seulement les refus antérieurs à ce `/device/me`
+ * (un refus plus récent ne repart pas en boucle sur un `/device/me` périmé).
+ */
+export function unparkNoAttributedMember(before = Infinity): number {
   const rows = getOutboxRows();
   let n = 0;
   const next = rows.map((r) => {
-    if (r.state !== 'error' || r.error?.code !== 'FORBIDDEN' || r.error.reason !== 'no_attributed_member') return r;
+    if (r.state !== 'error' || r.error?.code !== 'FORBIDDEN' || r.error.reason !== 'no_attributed_member' || !(r.error.at < before)) return r;
     n++;
     const copy = { ...r, state: 'pending' as const, attempts: 0, nextAttemptAt: 0 };
     delete copy.error;
@@ -305,7 +324,8 @@ type PushRowResult = {
 };
 export type PushResponse = { serverTime?: number; countEntries?: PushRowResult[]; movements?: PushRowResult[] };
 
-export type PushApplied = { done: number; parked: number; retried: number };
+/** `saved` : résultats enregistrés sur le téléphone (sinon rien n'a changé localement). */
+export type PushApplied = { done: number; parked: number; retried: number; saved: boolean };
 
 /**
  * Applique les résultats d'une requête (§7.4) : `created` / `duplicate`
@@ -324,7 +344,7 @@ export function applyPushResults(batch: PushBatch, res: PushResponse, nowMs: num
   take(res.countEntries, batch.countEntries);
   take(res.movements, batch.movements);
 
-  const out: PushApplied = { done: 0, parked: 0, retried: 0 };
+  const out: PushApplied = { done: 0, parked: 0, retried: 0, saved: false };
   const removed = new Set<string>();
   const updated = new Map<string, OutboxRecord>();
   const items: Record<string, OrgItem> = {};
@@ -387,7 +407,7 @@ export function applyPushResults(batch: PushBatch, res: PushResponse, nowMs: num
     for (const i of getAllOrgItems()) all[i.id] = i;
     extra.items = { ...all, ...items };
   }
-  commitOutbox(next, extra);
+  out.saved = commitOutbox(next, extra);
   return out;
 }
 

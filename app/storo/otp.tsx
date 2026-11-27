@@ -69,7 +69,7 @@ export default function Otp() {
           done.current = true;
           const res = await resolvePairingOutcome(r.outcome);
           if (res.ok) router.replace('/storo');
-          else { done.current = false; setOtp(null); if (res.message) setError(res.message); }
+          else { done.current = false; setOtp(null); setError(res.message ?? 'Association annulée.'); }
         }
       };
       schedule(otp.pollIntervalMs);

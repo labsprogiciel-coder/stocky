@@ -15,7 +15,7 @@ import { errorMessage } from './errors';
 import { ORG_KEYS, now, platform, readJSON, removeKey, writeJSON } from './kv';
 import { buildMigrationPayload, localUid, utf8Length } from './mapping';
 import { SAVE_ERROR, emit, setCurrentSiteId, setWorkspaceChoice } from './orgStore';
-import { applyApiError, clearMePendingMigration, getMe, getSession, getSessionState, getToken, isOrgWritable } from './session';
+import { applyApiError, clearMePendingMigration, getMe, getSession, getSessionState, getToken, isOrgWritable, sessionGeneration } from './session';
 
 export type LocalMigrationState =
   | 'building' | 'submitting' | 'pending_review' | 'approved' | 'rejected' | 'expired' | 'cancelled' | 'failed';
@@ -272,11 +272,15 @@ export async function submitMigration(): Promise<StepResult> {
   if (!s) return { ok: false, message: "Ce téléphone n'est plus associé à Storo." };
   const foreign = foreignOrg(m, s.orgId);
   if (foreign) return foreign;
+  const gen = sessionGeneration();
   const token = await getToken();
   if (!token) return { ok: false, message: "Ce téléphone n'est plus associé à Storo." };
   const r = await apiRequest<{ migration?: MigrationDto }>(s.apiBase, '/device/migrations', {
     method: 'POST', body: m.body, token, timeoutMs: MIGRATION_TIMEOUT_MS,
   });
+  // Migration abandonnée ou remplacée pendant l'envoi : la réponse ne la concerne plus.
+  const cur = getLocalMigration();
+  if (!cur || cur.clientId !== m.clientId || cur.state !== 'submitting') return { ok: true };
   if (r.ok) {
     const dto = r.data?.migration ?? {};
     patchMigration({ ...applyDto(dto), state: 'pending_review', submittedAt: now() });
@@ -284,7 +288,7 @@ export async function submitMigration(): Promise<StepResult> {
     if (dto.status && dto.status !== 'pending_review') return checkMigration();
     return { ok: true };
   }
-  const action = await applyApiError(r);
+  const action = await applyApiError(r, gen);
   if (action.kind === 'transport') return { ok: false, transport: true, error: r, ...(action.retryAfterMs ? { retryAfterMs: action.retryAfterMs } : {}) };
   if (action.kind === 'readonly') return { ok: false, transport: true, error: r };
   if (r.status === 409 && r.code === 'CONFLICT' && r.reason === 'migration_pending' && typeof r.details.migrationId === 'string') {
@@ -297,6 +301,13 @@ export async function submitMigration(): Promise<StepResult> {
   return { ok: false, message };
 }
 
+/** La migration enregistrée est toujours `m` (même envoi, même identifiant Storo, en attente). */
+function isSameMigration(m: LocalMigration): boolean {
+  const cur = getLocalMigration();
+  return cur !== null && cur.clientId === m.clientId && cur.migrationId === m.migrationId
+    && (cur.state === 'pending_review' || cur.state === 'submitting');
+}
+
 /** `GET /device/migrations/:id` : état courant ; une migration validée est appliquée. */
 export async function checkMigration(): Promise<StepResult> {
   const m = getLocalMigration();
@@ -304,11 +315,14 @@ export async function checkMigration(): Promise<StepResult> {
   if (!m || !m.migrationId || !s) return { ok: true };
   const foreign = foreignOrg(m, s.orgId);
   if (foreign) return foreign;
+  const gen = sessionGeneration();
   const token = await getToken();
-  if (!token) return { ok: true };
+  if (!token || !isSameMigration(m)) return { ok: true };
   const r = await apiRequest<{ migration?: MigrationDto; mapping?: MappingRow[] | null }>(s.apiBase, `/device/migrations/${encodeURIComponent(m.migrationId)}`, { token });
+  // Annulée, recommencée ou remplacée pendant la requête : la réponse (ancienne migration) est ignorée.
+  if (!isSameMigration(m)) return { ok: true };
   if (!r.ok) {
-    const action = await applyApiError(r);
+    const action = await applyApiError(r, gen);
     if (action.kind === 'transport' || action.kind === 'readonly') return { ok: false, transport: true, error: r };
     if (r.status === 404) {
       const message = 'Migration introuvable dans Storo. Vous pouvez recommencer.';
@@ -321,8 +335,9 @@ export async function checkMigration(): Promise<StepResult> {
   const base = applyDto(dto);
   switch (dto.status) {
     case 'approved':
-      applyApproved(m, dto, Array.isArray(r.data?.mapping) ? r.data!.mapping! : []);
-      return { ok: true };
+      return applyApproved(getLocalMigration()!, dto, Array.isArray(r.data?.mapping) ? r.data!.mapping! : [])
+        ? { ok: true }
+        : { ok: false, message: SAVE_ERROR };
     case 'rejected':
       patchMigration({ ...base, state: 'rejected', rejectReason: dto.rejectReason ?? null });
       clearMePendingMigration(m.migrationId);
@@ -342,11 +357,15 @@ export async function checkMigration(): Promise<StepResult> {
  * Migration validée : stock local archivé (lecture seule), site et espace
  * organisation choisis. Les articles créés arrivent par la synchronisation.
  */
-function applyApproved(m: LocalMigration, dto: MigrationDto, mapping: MappingRow[]): void {
+function applyApproved(m: LocalMigration, dto: MigrationDto, mapping: MappingRow[]): boolean {
   const t = now();
   const migrationId = dto.id ?? m.migrationId ?? '';
+  // Archive d'abord : sans elle, la migration reste en attente (nouvel essai au prochain suivi).
+  if (!saveArchive({ archivedAt: t, migrationId, orgId: m.orgId })) {
+    patchMigration(applyDto(dto));
+    return false;
+  }
   clearMePendingMigration(migrationId);
-  saveArchive({ archivedAt: t, migrationId, orgId: m.orgId });
   const siteId = dto.siteId ?? '';
   patchMigration({
     ...applyDto(dto),
@@ -362,6 +381,7 @@ function applyApproved(m: LocalMigration, dto: MigrationDto, mapping: MappingRow
   });
   if (siteId) setCurrentSiteId(siteId);
   setWorkspaceChoice('org');
+  return true;
 }
 
 /** « Annuler la migration » (en attente de validation). Renvoie un message d'erreur ou null. */
@@ -384,6 +404,7 @@ export async function cancelMigration(): Promise<string | null> {
     if (m.state !== 'pending_review') return null; // déjà décidée (rejouée) : état lu par submitMigration
   }
   if (m.state !== 'pending_review' || !m.migrationId || !s) return null;
+  const gen = sessionGeneration();
   const token = await getToken();
   if (!token) return "Ce téléphone n'est plus associé à Storo.";
   const r = await apiRequest<{ migration?: MigrationDto }>(s.apiBase, `/device/migrations/${encodeURIComponent(m.migrationId)}/cancel`, { method: 'POST', body: {}, token });
@@ -391,7 +412,7 @@ export async function cancelMigration(): Promise<string | null> {
     clearMePendingMigration(m.migrationId);
     return patchMigration({ ...applyDto(r.data?.migration ?? {}), state: 'cancelled' }) ? null : SAVE_ERROR;
   }
-  await applyApiError(r);
+  await applyApiError(r, gen);
   if (r.status === 409 && r.code === 'INVALID_TRANSITION') {
     await checkMigration();
     return 'Cette migration a déjà été traitée dans Storo.';
@@ -399,10 +420,13 @@ export async function cancelMigration(): Promise<string | null> {
   return errorMessage(r);
 }
 
-/** « Recommencer » après un refus, une expiration, une annulation ou un échec. */
+/**
+ * « Recommencer » après un refus, une expiration, une annulation, un échec,
+ * ou une migration validée dont le stock local a été réactivé (archive supprimée).
+ */
 export function resetMigration(): string | null {
   const m = getLocalMigration();
-  if (!m || isMigrationPending(m) || m.state === 'approved') return null;
+  if (!m || isMigrationPending(m) || (m.state === 'approved' && getArchive())) return null;
   if (m.migrationId) clearMePendingMigration(m.migrationId);
   return saveMigration(null) ? null : SAVE_ERROR;
 }

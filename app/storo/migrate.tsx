@@ -30,12 +30,14 @@ import { useLocalMigration, useStoroSession } from '../../data/storo/useStoro';
 
 export default function Migrate() {
   const { session } = useStoroSession();
-  const { migration } = useLocalMigration();
+  const { migration, archive } = useLocalMigration();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const preview = previewMigration();
   const org = session?.orgName || 'votre organisation';
   const state = migration?.state;
+  // Migration validée puis stock local réactivé (archive supprimée) : un nouvel envoi est possible.
+  const ended = state === 'rejected' || state === 'expired' || state === 'cancelled' || state === 'failed' || (state === 'approved' && !archive);
 
   // Suivi toutes les 30 s tant que l'écran est affiché et la migration en attente.
   useFocusEffect(
@@ -97,7 +99,7 @@ export default function Migrate() {
   };
 
   // ── Résultat ─────────────────────────────────────────────────────────────
-  if (migration && state === 'approved' && migration.result) {
+  if (migration && state === 'approved' && archive && migration.result) {
     const res = migration.result;
     const sum = res.result;
     const names = migration.names ?? {};
@@ -170,7 +172,7 @@ export default function Migrate() {
       {migration && state === 'expired' && <InlineAlert message="Le transfert n'a pas été validé à temps (14 jours) : il a expiré." />}
       {migration && state === 'cancelled' && <InlineAlert message="Transfert annulé." />}
       {migration && state === 'failed' && <InlineAlert message={migration.error ?? 'Le transfert a échoué.'} />}
-      {migration && (state === 'rejected' || state === 'expired' || state === 'cancelled' || state === 'failed') && (
+      {migration && ended && (
         <Btn title="Recommencer" variant="outline" onPress={restart} />
       )}
 
@@ -190,10 +192,10 @@ export default function Migrate() {
       {(error ?? preview.blocked) && <InlineAlert message={(error ?? preview.blocked)!} />}
       <Btn
         title={busy ? 'Envoi…' : 'Envoyer à Storo'}
-        disabled={busy || preview.blocked !== null || (migration !== null && state !== undefined && state !== 'rejected' && state !== 'expired' && state !== 'cancelled' && state !== 'failed')}
+        disabled={busy || preview.blocked !== null || (migration !== null && state !== undefined && !ended)}
         onPress={send}
       />
-      {migration && (state === 'rejected' || state === 'expired' || state === 'cancelled' || state === 'failed') && (
+      {migration && ended && (
         <Muted>Touchez « Recommencer » pour préparer un nouvel envoi.</Muted>
       )}
     </Screen>

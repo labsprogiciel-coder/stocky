@@ -257,9 +257,9 @@ describe('comptages en cours d\'envoi', () => {
     expect(env.orgStore.getOutboxRows().map((r) => r.clientId)).toEqual([`${DEVICE}:ce:t1:i1:1`, `${DEVICE}:ce:t1:i2:1`, `${DEVICE}:ce:t1:i1:2`]);
     release();
     await running;
-    // rev 1 enregistrée par Storo ; la rev 2 attend et part au cycle suivant : rien n'est perdu ni caché.
-    expect(env.orgStore.getCount('t1')?.entries.i1).toMatchObject({ rev: 2, sentRev: 1 });
-    expect(env.orgStore.getOutboxRows().map((r) => r.clientId)).toEqual([`${DEVICE}:ce:t1:i1:2`]);
+    // rev 1 enregistrée par Storo ; la rev 2, saisie pendant l'envoi, part dans la requête suivante
+    // (chaque requête est composée depuis la file actuelle) : rien n'est perdu ni caché.
+    expect(env.orgStore.getOutboxRows()).toEqual([]);
     expect(await env.sync.runSync('manual')).toEqual({ ok: true });
     expect(env.orgStore.getCount('t1')?.entries.i1).toMatchObject({ rev: 2, sentRev: 2 });
     expect(env.orgStore.getCount('t1')?.entries.i2).toMatchObject({ status: 'Passé', sentRev: 1 });
@@ -315,7 +315,7 @@ describe('conflits passagers', () => {
         { clientId: c2.clientId, status: 'error', error: { code: 'CONFLICT', message: 'closed', details: { reason: 'stock_take_closed' } } },
       ],
     }, T0 + 1000);
-    expect(out).toEqual({ done: 0, parked: 1, retried: 1 });
+    expect(out).toEqual({ done: 0, parked: 1, retried: 1, saved: true });
     const rows = env.orgStore.getOutboxRows();
     expect(rows[0]).toMatchObject({ state: 'pending', attempts: 1, nextAttemptAt: T0 + 1000 + 30_000 });
     expect(rows[1]).toMatchObject({ state: 'error' });

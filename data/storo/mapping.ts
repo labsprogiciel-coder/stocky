@@ -187,12 +187,19 @@ export function movementBody(clientId: string, itemId: string, mode: 'Entrée' |
 
 // ── Recherche d'un code (§8.3) ─────────────────────────────────────────────
 
-/** Code-barres exact, puis SKU (sans casse) parmi les articles du site. */
+/** Clé de comparaison d'un code-barres : UPC-A lu en EAN-13 (zéro en tête, iOS) = UPC-A. */
+const barcodeKey = (s: string): string => {
+  const t = s.trim();
+  return /^0\d{12}$/.test(t) ? t.slice(1) : t;
+};
+
+/** Code-barres exact (UPC-A / EAN-13 à zéro en tête confondus), puis SKU (sans casse) parmi les articles du site. */
 export function lookupCode(items: readonly OrgItem[], siteId: string | null, code: string): OrgItem | null {
   const c = code.trim();
   if (!c) return null;
   const site = items.filter((i) => i.siteId === siteId);
-  const byBarcode = site.filter((i) => i.barcode === c).sort((a, b) => (a.sku < b.sku ? -1 : a.sku > b.sku ? 1 : 0));
+  const key = barcodeKey(c);
+  const byBarcode = site.filter((i) => i.barcode && barcodeKey(i.barcode) === key).sort((a, b) => (a.sku < b.sku ? -1 : a.sku > b.sku ? 1 : 0));
   if (byBarcode.length > 0) return byBarcode[0];
   const low = c.toLowerCase();
   return site.find((i) => i.sku.toLowerCase() === low) ?? null;

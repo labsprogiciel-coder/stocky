@@ -60,21 +60,51 @@ const noteServerTime = (v: unknown) => {
   if (typeof v === 'number' && Number.isFinite(v)) _lastServerTime = { serverTime: v, at: now() };
 };
 
+const STORAGE_MESSAGE = "Enregistrement impossible sur ce téléphone.";
+
+function storageError(): SyncResult {
+  recordError({ code: 'STORAGE', message: STORAGE_MESSAGE });
+  return { ok: false, stopped: 'error', message: STORAGE_MESSAGE };
+}
+
+/**
+ * La session du cycle est toujours celle du téléphone (même organisation,
+ * même jeton, active, pas d'association en cours) : sinon rien n'est plus
+ * envoyé ni appliqué avec l'ancien jeton (dissociation, autre organisation).
+ */
+async function stillCurrent(orgId: string, token: string): Promise<SyncResult | null> {
+  const s = getSession();
+  if (!s || s.readonlyReason === 'unpaired') return { ok: false, stopped: 'no_session' };
+  if (isPairingInProgress() || s.orgId !== orgId) return { ok: false, stopped: 'busy' };
+  if (s.state !== 'active') return { ok: false, stopped: 'readonly' };
+  if ((await getToken()) !== token) return { ok: false, stopped: 'busy' };
+  return null;
+}
+
 async function push(apiBase: string, token: string, orgId: string): Promise<SyncResult> {
-  const rows = sendableRows(orgId, now());
-  if (rows.length === 0) return { ok: true };
-  for (const batch of chunkRows(rows)) {
+  // Chaque requête est composée depuis la file actuelle au moment de son envoi
+  // (une saisie passée ou remplacée pendant la requête précédente n'est pas envoyée).
+  const attempted = new Set<string>();
+  for (;;) {
+    const stop = await stillCurrent(orgId, token);
+    if (stop) return stop;
+    const batch = chunkRows(sendableRows(orgId, now()).filter((x) => !attempted.has(x.clientId)))[0];
+    if (!batch) return { ok: true };
+    for (const x of batch.rows) attempted.add(x.clientId);
     setInFlight(batch.rows.map((x) => x.clientId));
     let r: Awaited<ReturnType<typeof apiRequest<PushResponse>>>;
+    let saved = true;
     try {
       r = await apiRequest<PushResponse>(apiBase, '/sync/push', {
         method: 'POST', token, body: { countEntries: batch.countEntries, movements: batch.movements },
       });
-      if (r.ok) applyPushResults(batch, r.data ?? {}, now());
+      if (r.ok) saved = applyPushResults(batch, r.data ?? {}, now()).saved;
     } finally {
       setInFlight(null);
     }
     if (!r.ok) {
+      const gone = await stillCurrent(orgId, token);
+      if (gone) return gone;
       if (r.status === 400 && r.code === 'VALIDATION') {
         // Enveloppe refusée : défaut de l'application, aucune ligne n'est garée.
         console.warn('[storo] /sync/push refusé (VALIDATION)', r.details);
@@ -83,23 +113,29 @@ async function push(apiBase: string, token: string, orgId: string): Promise<Sync
       }
       return handleError(r);
     }
+    // Résultats non enregistrés : les lignes restent en attente, rien n'avance.
+    if (!saved) return storageError();
     noteServerTime(r.data?.serverTime);
     updateSyncMeta({ lastPushAt: now() });
   }
-  return { ok: true };
 }
 
 async function pull(apiBase: string, token: string, orgId: string): Promise<SyncResult> {
   let resetDone = false;
   for (let page = 0; page < PULL_MAX_PAGES; page++) {
+    const stop = await stillCurrent(orgId, token);
+    if (stop) return stop;
     const cursor = getSyncMeta().cursor;
     const qs = `tables=sites,stockTakes,items&limit=${PULL_LIMIT}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
     const r = await apiRequest<PullPage>(apiBase, `/sync/pull?${qs}`, { token });
+    // Session changée pendant la requête : la réponse (ancienne organisation ou ancien jeton) est ignorée.
+    const gone = await stillCurrent(orgId, token);
+    if (gone) return gone;
     if (!r.ok) {
       if (r.status === 400 && r.code === 'VALIDATION' && cursor && !resetDone) {
         // Curseur refusé : cache effacé (ni comptages ni file d'envoi), lecture complète une fois.
         resetDone = true;
-        resetPullState();
+        if (!resetPullState()) return storageError();
         continue;
       }
       if (r.status === 403 && r.code === 'FORBIDDEN' && typeof r.details.permission === 'string') {
@@ -111,10 +147,7 @@ async function pull(apiBase: string, token: string, orgId: string): Promise<Sync
     }
     noteServerTime(r.data?.serverTime);
     const applied = applyPullPage(r.data ?? {}, orgId, now());
-    if (!applied.ok) {
-      recordError({ code: 'STORAGE', message: "Enregistrement impossible sur ce téléphone." });
-      return { ok: false, stopped: 'error', message: "Enregistrement impossible sur ce téléphone." };
-    }
+    if (!applied.ok) return storageError();
     if (!r.data?.hasMore) return { ok: true };
   }
   return { ok: true };
@@ -129,7 +162,6 @@ async function cycle(reason: SyncReason): Promise<SyncResult> {
   const t0 = now();
   const me = getMe();
   const meStale = !me || t0 - me.fetchedAt >= ME_REFRESH_MS;
-  const wasAttributed = me?.attributedMemberId ?? null;
 
   if (s.state === 'readonly') {
     // Sonde : au premier plan, au retour du réseau, sur demande, ou toutes les 15 min.
@@ -137,6 +169,8 @@ async function cycle(reason: SyncReason): Promise<SyncResult> {
       return { ok: false, stopped: 'readonly' };
     }
     const r = await refreshMe();
+    // Réponse à l'ancien jeton (nouvelle association pendant la requête) : rien n'est appliqué.
+    if (!r.ok && r.stale) return { ok: false, stopped: 'busy' };
     if (!r.ok) return r.action.kind === 'transport' ? transportBackoff(r.error, r.action.retryAfterMs) : { ok: false, stopped: 'readonly' };
     s = getSession();
     if (!s || s.state !== 'active') return { ok: false, stopped: 'readonly' };
@@ -149,14 +183,17 @@ async function cycle(reason: SyncReason): Promise<SyncResult> {
     if (getSyncMeta().nextTryAt > t0 && reason !== 'manual') return { ok: false, stopped: 'backoff' };
     if (meStale) {
       const r = await refreshMe();
+      if (!r.ok && r.stale) return { ok: false, stopped: 'busy' };
       if (!r.ok) return r.action.kind === 'transport' ? transportBackoff(r.error, r.action.retryAfterMs) : handleError(r.error);
       s = getSession();
       if (!s || s.state !== 'active') return { ok: false, stopped: 'readonly' };
     }
   }
 
-  // Téléphone attribué à un membre depuis le dernier /device/me : saisies refusées « aucun membre » renvoyées.
-  if (wasAttributed === null && getMe()?.attributedMemberId) unparkNoAttributedMember();
+  // Téléphone attribué à un membre : saisies refusées « aucun membre » avant ce /device/me renvoyées
+  // (à chaque cycle : rien n'est perdu si l'enregistrement échoue ou si l'attribution a été lue ailleurs).
+  const meNow = getMe();
+  if (meNow?.attributedMemberId) unparkNoAttributedMember(meNow.fetchedAt);
 
   const token = await getToken();
   if (!token) return { ok: false, stopped: 'no_session' };
@@ -164,7 +201,7 @@ async function cycle(reason: SyncReason): Promise<SyncResult> {
 
   // Données d'une autre organisation (association interrompue) : jamais mélangées.
   const dataOrg = getSyncMeta().orgId;
-  if (dataOrg !== null && dataOrg !== s.orgId) clearForOrgSwitch(s.orgId);
+  if (dataOrg !== null && dataOrg !== s.orgId && !clearForOrgSwitch(s.orgId)) return storageError();
 
   const mig = await tickMigration();
   if (!mig.ok && mig.transport) return mig.error.network || (mig.error.status ?? 0) >= 500 || mig.error.status === 429 ? transportBackoff(mig.error, mig.retryAfterMs) : { ok: false, stopped: 'readonly' };
@@ -183,7 +220,8 @@ async function cycle(reason: SyncReason): Promise<SyncResult> {
 }
 
 let _running: Promise<SyncResult> | null = null;
-let _again = false;
+/** Cycle à rejouer après le cycle en cours (`manual` l'emporte : attente de transport ignorée). */
+let _againReason: SyncReason | null = null;
 
 /**
  * Lance un cycle. Pendant un cycle, un nouvel appel renvoie le cycle en cours
@@ -191,7 +229,7 @@ let _again = false;
  */
 export function runSync(reason: SyncReason): Promise<SyncResult> {
   if (_running) {
-    _again = true;
+    _againReason = reason === 'manual' || _againReason === 'manual' ? 'manual' : 'enqueue';
     return _running;
   }
   _running = (async () => {
@@ -200,16 +238,18 @@ export function runSync(reason: SyncReason): Promise<SyncResult> {
     try {
       let r: SyncReason = reason;
       for (let i = 0; i < 3; i++) {
-        _again = false;
+        _againReason = null;
         result = await cycle(r);
-        if (!_again) break;
-        r = r === 'manual' ? 'manual' : 'enqueue';
+        const again: SyncReason | null = _againReason;
+        if (!again) break;
+        r = r === 'manual' ? 'manual' : again;
       }
     } catch (e) {
       console.warn('[storo] Synchronisation interrompue.', e);
       result = { ok: false, stopped: 'error', message: SYNC_ERROR };
     } finally {
       _running = null;
+      _againReason = null;
       setSyncing(false);
     }
     return result;

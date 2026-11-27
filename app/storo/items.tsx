@@ -16,7 +16,7 @@ export default function OrgItems() {
   const [q, setQ] = useState('');
   const query = q.trim().toLowerCase();
   const items = getSiteItems(siteId).filter((i) =>
-    !query || i.name.toLowerCase().includes(query) || i.sku.toLowerCase().includes(query) || (i.barcode ?? '').includes(query),
+    !query || i.name.toLowerCase().includes(query) || i.sku.toLowerCase().includes(query) || (i.barcode ?? '').toLowerCase().includes(query),
   );
   const writable = state === 'active';
 

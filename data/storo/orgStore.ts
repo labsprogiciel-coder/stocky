@@ -99,20 +99,39 @@ let _s: State | null = null;
  */
 type Journal = { parts: Partial<Record<Part, unknown>> };
 
-function replayJournal(): void {
+/**
+ * Parties d'un journal resté sur le disque (effacement ou rejeu impossible) :
+ * avant toute autre écriture, ces parties sont réécrites depuis la mémoire
+ * puis le journal effacé ; sinon rien n'est écrit (une écriture derrière un
+ * vieux journal serait écrasée par son rejeu au prochain démarrage).
+ */
+let _txnParts: Part[] | null = null;
+
+/** Rejoue un journal resté ; renvoie ses parties (état voulu, à garder en mémoire). */
+function replayJournal(): Journal['parts'] | null {
   const j = readJSON<Journal | null>(ORG_KEYS.txn, null, (v) => isRecord(v) && isRecord((v as Journal).parts));
-  if (!j) return;
-  for (const [p, v] of Object.entries(j.parts) as [Part, unknown][]) {
-    if (PART_KEYS[p]) writeJSON(PART_KEYS[p], v === null ? undefined : v);
+  if (!j) return null;
+  const parts = (Object.keys(j.parts) as Part[]).filter((p) => PART_KEYS[p]);
+  let ok = true;
+  for (const p of parts) {
+    const v = j.parts[p];
+    if (!writeJSON(PART_KEYS[p], v === null ? undefined : v)) ok = false;
   }
-  removeKey(ORG_KEYS.txn);
+  // Journal gardé tant que toutes ses parties ne sont pas écrites (nouvel essai au prochain chargement).
+  if (!ok || !removeKey(ORG_KEYS.txn)) {
+    console.warn('[storo] Journal non finalisé : les écritures attendent.');
+    _txnParts = parts;
+  }
+  const out: Journal['parts'] = {};
+  for (const p of parts) out[p] = j.parts[p];
+  return out;
 }
 
 function load(): State {
-  replayJournal();
+  const journal = replayJournal();
   const sync = readJSON<SyncMeta>(ORG_KEYS.sync, BLANK_SYNC, isRecord);
   const siteId = readJSON<string | null>(ORG_KEYS.siteId, null, (v) => typeof v === 'string');
-  return {
+  const state: State = {
     sites: readJSON<OrgSite[]>(ORG_KEYS.sites, [], Array.isArray),
     items: readJSON<Record<string, OrgItem>>(ORG_KEYS.items, {}, isRecord),
     takes: readJSON<Record<string, OrgTake>>(ORG_KEYS.takes, {}, isRecord),
@@ -122,6 +141,23 @@ function load(): State {
     workspace: readJSON<Workspace>(ORG_KEYS.workspace, 'standalone', (v) => v === 'org' || v === 'standalone'),
     sync: { ...BLANK_SYNC, ...sync },
   };
+  // Rejeu incomplet : la mémoire suit le journal (jamais l'état mélangé du disque).
+  if (journal && _txnParts) {
+    Object.assign(state, journal);
+    state.sync = { ...BLANK_SYNC, ...(isRecord(state.sync) ? state.sync : {}) };
+  }
+  return state;
+}
+
+/** Réécrit depuis la mémoire les parties d'un journal resté, puis l'efface. */
+function finalizeJournal(s: State): boolean {
+  if (!_txnParts) return true;
+  for (const p of _txnParts) {
+    if (!writeJSON(PART_KEYS[p], s[p] === null ? undefined : s[p])) return false;
+  }
+  if (!removeKey(ORG_KEYS.txn)) return false;
+  _txnParts = null;
+  return true;
 }
 
 function st(): State {
@@ -132,6 +168,7 @@ function st(): State {
 /** Pour les tests (et après un effacement) : relit tout depuis le stockage au prochain accès. */
 export function reloadOrgStore(): void {
   _s = null;
+  _txnParts = null;
 }
 
 /**
@@ -141,6 +178,7 @@ export function reloadOrgStore(): void {
  */
 function commit(next: Partial<State>, order?: readonly Part[]): boolean {
   const s = st();
+  if (!finalizeJournal(s)) return false;
   const parts = (order ?? (Object.keys(next) as Part[])).filter((p) => p in next);
   const journaled = parts.length > 1 && parts.includes('outbox');
   if (journaled) {
@@ -152,13 +190,26 @@ function commit(next: Partial<State>, order?: readonly Part[]): boolean {
   for (const p of parts) {
     const value = next[p];
     if (!writeJSON(PART_KEYS[p], value === null ? undefined : value)) {
-      for (const w of written) writeJSON(PART_KEYS[w], s[w] === null ? undefined : s[w]);
-      if (journaled) removeKey(ORG_KEYS.txn);
+      let restored = true;
+      for (const w of written) {
+        if (!writeJSON(PART_KEYS[w], s[w] === null ? undefined : s[w])) restored = false;
+      }
+      if (journaled) {
+        if (!restored) {
+          // Retour arrière : le journal reçoit les anciennes valeurs (celles de la
+          // mémoire, annoncées à l'appelant), rejouées au prochain chargement. S'il ne
+          // peut pas être réécrit, le journal d'origine reste (jamais d'état mélangé).
+          const back: Journal = { parts: {} };
+          for (const q of parts) back.parts[q] = s[q] ?? null;
+          writeJSON(ORG_KEYS.txn, back);
+          _txnParts = parts;
+        } else if (!removeKey(ORG_KEYS.txn)) _txnParts = parts;
+      }
       return false;
     }
     written.push(p);
   }
-  if (journaled) removeKey(ORG_KEYS.txn);
+  if (journaled && !removeKey(ORG_KEYS.txn)) _txnParts = parts;
   _s = { ...s, ...next };
   emit();
   return true;

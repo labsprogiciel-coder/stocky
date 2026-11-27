@@ -46,6 +46,12 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
 let _session: StoroSession | null | undefined;
 let _me: DeviceMe | null | undefined;
 let _token: string | null | undefined;
+/**
+ * Génération de la session : avance à chaque changement de jeton ou
+ * dissociation. Une réponse à une requête partie avant (ancien jeton,
+ * session dissociée) n'est jamais appliquée à la session actuelle.
+ */
+let _generation = 0;
 
 // ── Serveurs acceptés ──────────────────────────────────────────────────────
 
@@ -140,6 +146,7 @@ async function setToken(token: string | null): Promise<boolean> {
     if (token === null) await secureKv().remove(TOKEN_KEY);
     else await secureKv().set(TOKEN_KEY, token);
     _token = token;
+    _generation++;
     return true;
   } catch (e) {
     console.warn('[storo] Écriture du jeton impossible.', e);
@@ -206,6 +213,7 @@ export const MIGRATION_BLOCKS_SWITCH =
 export async function setReadonly(reason: ReadonlyReason, details: Record<string, unknown> = {}): Promise<void> {
   const s = getSession();
   if (!s) return;
+  if (reason === 'unpaired') _generation++;
   const same = s.state === 'readonly' && s.readonlyReason === reason && JSON.stringify(s.readonlyDetails ?? {}) === JSON.stringify(details);
   if (!same) saveSession({ ...s, state: 'readonly', readonlyReason: reason, readonlyDetails: details });
   if (reason === 'unpaired') await setToken(null);
@@ -224,10 +232,17 @@ function setActive(): void {
  * Applique à la session une erreur d'un appel Storo (401 → dissocié, 403 →
  * lecture seule) et renvoie son classement pour la suite propre à l'appel.
  */
-export async function applyApiError(e: ApiError): Promise<ErrorAction> {
+export async function applyApiError(e: ApiError, gen?: number): Promise<ErrorAction> {
   const action = classify(e);
+  // Requête partie avant un changement de jeton (nouvelle association, dissociation) : rien n'est appliqué.
+  if (gen !== undefined && gen !== _generation) return action;
   if (action.kind === 'readonly') await setReadonly(action.reason, action.details);
   return action;
+}
+
+/** Génération actuelle de la session (à relever avant la lecture du jeton d'une requête). */
+export function sessionGeneration(): number {
+  return _generation;
 }
 
 /** Au démarrage : une session sans jeton (Keychain vidé, réinstallation) est dissociée. */
@@ -243,7 +258,8 @@ export async function checkTokenAtStart(): Promise<void> {
   }
 }
 
-export type MeResult = { ok: true; me: DeviceMe } | { ok: false; error: ApiError; action: ErrorAction };
+/** `stale` : jeton remplacé ou session dissociée pendant la requête, rien n'a été appliqué. */
+export type MeResult = { ok: true; me: DeviceMe } | { ok: false; error: ApiError; action: ErrorAction; stale?: true };
 
 /**
  * `GET /device/me` : attribution, droit `stockly_mobile`, nom de
@@ -251,6 +267,7 @@ export type MeResult = { ok: true; me: DeviceMe } | { ok: false; error: ApiError
  * `stocklyMobile: true` (ré)active la session.
  */
 export async function refreshMe(tokenOverride?: string): Promise<MeResult> {
+  const gen = _generation;
   const s = getSession();
   const token = tokenOverride ?? (await getToken());
   if (s && !token && _token === undefined) {
@@ -264,9 +281,12 @@ export async function refreshMe(tokenOverride?: string): Promise<MeResult> {
     return { ok: false, error, action: { kind: 'readonly', reason: 'unpaired', details: {} } };
   }
   const r = await apiRequest<Omit<DeviceMe, 'fetchedAt'>>(s.apiBase, '/device/me', { token });
-  if (!r.ok) return { ok: false, error: r, action: await applyApiError(r) };
+  // Jeton remplacé ou session dissociée pendant la requête : réponse ignorée (rien n'est appliqué).
+  const stale = !tokenOverride && gen !== _generation;
+  if (!r.ok) return stale ? { ok: false, error: r, action: classify(r), stale: true } : { ok: false, error: r, action: await applyApiError(r) };
   const t = now();
   const me: DeviceMe = { ...(isRecord(r.data) ? r.data : {}), attributedMemberId: isRecord(r.data) && typeof r.data.attributedMemberId === 'string' ? r.data.attributedMemberId : null, fetchedAt: t };
+  if (stale) return { ok: true, me };
   saveMe(me);
   if (typeof me.serverTime === 'number') updateSyncMeta({ serverOffsetMs: me.serverTime - t });
   const orgName = me.organization?.name;
@@ -363,7 +383,13 @@ export async function completePairing(creds: PairingCredentials): Promise<Pairin
         if (!(await setToken(creds.deviceToken))) {
           return { kind: 'error', message: "Le jeton Storo n'a pas pu être enregistré sur ce téléphone. Recommencez l'association." };
         }
-        if (!clearForOrgSwitch(creds.orgId) || !saveSession(newSession(creds, newOrgName === 'la nouvelle organisation' ? '' : newOrgName, serial))) {
+        // Nouvelle session d'abord : l'ancien cache n'est effacé que si le changement peut aboutir.
+        if (!saveSession(newSession(creds, newOrgName === 'la nouvelle organisation' ? '' : newOrgName, serial))) {
+          await setToken(prevToken);
+          return { kind: 'error', message: "L'association n'a pas pu être enregistrée sur ce téléphone. Recommencez." };
+        }
+        if (!clearForOrgSwitch(creds.orgId)) {
+          saveSession(prevSession);
           await setToken(prevToken);
           return { kind: 'error', message: "L'association n'a pas pu être enregistrée sur ce téléphone. Recommencez." };
         }
@@ -488,6 +514,7 @@ export async function claimQr(qr: PairingQr): Promise<PairingOutcome> {
 
 /** `POST /device/heartbeat` (échecs ignorés, sauf 401 / 403 appliqués à la session). */
 export async function heartbeat(): Promise<void> {
+  const gen = _generation;
   const s = getSession();
   if (!s || s.state !== 'active') return;
   const token = await getToken();
@@ -496,7 +523,7 @@ export async function heartbeat(): Promise<void> {
   const r = await apiRequest(s.apiBase, '/device/heartbeat', {
     method: 'POST', token, body: { ...(info.appVersion ? { appVersion: info.appVersion } : {}), ...(info.platform ? { platform: info.platform } : {}) },
   });
-  if (!r.ok) await applyApiError(r);
+  if (!r.ok && gen === _generation) await applyApiError(r);
 }
 
 /**
