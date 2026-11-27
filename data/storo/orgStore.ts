@@ -52,6 +52,11 @@ export type SyncMeta = {
   /** Fin d'un `Retry-After` (429 / 503) : respecté même au retour du réseau ou au premier plan. */
   retryAfterUntil?: number;
   serverOffsetMs: number;
+  /**
+   * Heure du serveur la plus avancée vue (estimée) : une horloge du téléphone
+   * reculée hors ligne ne repousse pas la fin de l'abonnement mobile.
+   */
+  serverTimeSeen?: number;
   /** Lecture refusée par l'organisation (`details.permission`) jusqu'à la prochaine lecture réussie. */
   deniedPermission?: string;
 };

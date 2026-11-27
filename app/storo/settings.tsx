@@ -79,7 +79,7 @@ export default function StoroSettings() {
       {session ? (
         <Card style={{ gap: 2 }}>
           <H2>{org}</H2>
-          <Line label="État" value={state === 'active' ? 'connecté' : `lecture seule (${STATE_LABELS[session.readonlyReason ?? ''] ?? '—'})`} />
+          <Line label="État" value={state === 'active' ? 'connecté' : typeof session.readonlyDetails?.expiredAt === 'number' ? `lecture seule (abonnement mobile expiré le ${fmtDateTime(session.readonlyDetails.expiredAt)})` : `lecture seule (${STATE_LABELS[session.readonlyReason ?? ''] ?? '—'})`} />
           <Line label="Membre attribué" value={me?.attributedMemberName ?? (me?.attributedMemberId ? 'oui' : 'aucun')} />
           <Line label="Code du téléphone" value={session.serialNumber || '—'} />
           <Line label="Appareil" value={me?.device?.name ?? session.deviceId} />
@@ -98,6 +98,7 @@ export default function StoroSettings() {
       {session && (
         <View style={{ gap: 8 }}>
           {state === 'active' && <Btn title="Synchroniser" variant="outline" onPress={() => { void runSync('manual'); }} />}
+          {state === 'readonly' && session.readonlyReason !== 'unpaired' && <Btn title="Vérifier auprès de Storo" variant="outline" onPress={() => { void runSync('manual'); }} />}
           <Btn title={state === 'active' ? "Changer d'organisation" : 'Associer à nouveau'} variant="outline" onPress={() => router.push('/storo/connect')} />
           {session.readonlyReason !== 'unpaired' && <Btn title="Dissocier ce téléphone" variant="danger" onPress={doUnpair} />}
           {state !== 'active' && <Btn title="Effacer les données Storo" variant="danger" onPress={doErase} />}

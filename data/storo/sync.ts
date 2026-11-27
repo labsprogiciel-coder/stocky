@@ -23,7 +23,7 @@ import {
   type PullPage,
 } from './orgStore';
 import { applyPushResults, chunkRows, sendableRows, setInFlight, transportBackoffMs, unparkNoAttributedMember, type PushResponse } from './outbox';
-import { applyApiError, checkEntitlementExpiry, checkTokenAtStart, dropSession, getMe, getSession, getToken, heartbeat, isPairingInProgress, refreshMe } from './session';
+import { applyApiError, checkEntitlementExpiry, checkTokenAtStart, expiryProbeDue, dropSession, getMe, getSession, getToken, heartbeat, isPairingInProgress, refreshMe } from './session';
 
 export type SyncReason = 'start' | 'foreground' | 'online' | 'timer' | 'enqueue' | 'manual' | 'migration';
 
@@ -166,10 +166,13 @@ async function cycle(reason: SyncReason): Promise<SyncResult> {
   const meStale = !me || t0 - me.fetchedAt >= ME_REFRESH_MS;
 
   if (s.state === 'readonly') {
-    // Sonde : au premier plan, au retour du réseau, sur demande, ou toutes les 15 min.
-    if (!(reason === 'manual' || reason === 'foreground' || reason === 'online' || reason === 'start' || meStale)) {
+    // Sonde : au premier plan, au retour du réseau, sur demande, toutes les 15 min, ou tout de
+    // suite après une fin d'abonnement vue sur le téléphone (Storo l'a peut-être renouvelé).
+    const probe = expiryProbeDue();
+    if (!(reason === 'manual' || reason === 'foreground' || reason === 'online' || reason === 'start' || meStale || probe)) {
       return { ok: false, stopped: 'readonly' };
     }
+    if (reason === 'timer' && getSyncMeta().nextTryAt > t0) return { ok: false, stopped: 'backoff' };
     const r = await refreshMe();
     // Réponse à l'ancien jeton (nouvelle association pendant la requête) : rien n'est appliqué.
     if (!r.ok && r.stale) return { ok: false, stopped: 'busy' };
@@ -216,7 +219,10 @@ async function cycle(reason: SyncReason): Promise<SyncResult> {
   if (!pushed.ok) return pushed;
 
   const patch: Parameters<typeof updateSyncMeta>[0] = { backoffStep: 0, nextTryAt: 0, retryAfterUntil: undefined, lastOkAt: now(), lastError: undefined };
-  if (_lastServerTime) patch.serverOffsetMs = _lastServerTime.serverTime - _lastServerTime.at;
+  if (_lastServerTime) {
+    patch.serverOffsetMs = _lastServerTime.serverTime - _lastServerTime.at;
+    patch.serverTimeSeen = _lastServerTime.serverTime;
+  }
   updateSyncMeta(patch);
   return { ok: true };
 }
@@ -292,7 +298,7 @@ async function tick(): Promise<void> {
     await heartbeat();
   }
   const me = getMe();
-  if (s.state === 'readonly' && s.readonlyReason !== 'unpaired' && (!me || t - me.fetchedAt >= ME_REFRESH_MS)) void runSync('timer');
+  if (s.state === 'readonly' && s.readonlyReason !== 'unpaired' && (!me || t - me.fetchedAt >= ME_REFRESH_MS || expiryProbeDue())) void runSync('timer');
   // Session active, quel que soit l'écran : lignes à envoyer (dont les renvois
   // différés) ou attente de transport écoulée → un cycle.
   if (s.state === 'active' && shouldRetry(s.orgId, t)) void runSync('timer');

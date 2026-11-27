@@ -75,4 +75,49 @@ describe('offline expiry of the stockly_mobile entitlement', () => {
     expect(env.session.getSessionState()).toBe('active');
     expect(env.session.isOrgWritable()).toBe(true);
   });
+
+  it('probes Storo on the next timer cycle right after a local expiry (renewed meanwhile)', async () => {
+    const calls: string[] = [];
+    const env = await paired(T0 + DAY, (c) => {
+      calls.push(c.path);
+      if (c.path === '/device/me') return reply(200, { attributedMemberId: 'member-1', organization: { id: ORG, name: 'Pharmacie du Port' }, entitlements: { stocklyMobile: true, stocklyMobileValidUntil: T0 + 40 * DAY }, serverTime: env.clock.now() });
+      if (c.path.startsWith('/sync/pull')) return reply(200, empty);
+      return reply(200, { serverTime: env.clock.now(), countEntries: [], movements: [] });
+    });
+    // /device/me lu 5 min avant la fin (moins de 15 min) : seule la fin d'abonnement justifie la sonde.
+    env.clock.advance(DAY - 5 * 60_000);
+    env.mem.set(env.kv.ORG_KEYS.me, JSON.stringify({ attributedMemberId: 'member-1', entitlements: { stocklyMobile: true, stocklyMobileValidUntil: T0 + DAY }, fetchedAt: env.clock.now() }));
+    env.session.reloadSession();
+    env.clock.advance(5 * 60_000 + 1);
+    expect(await env.session.checkEntitlementExpiry()).toBe(true);
+    expect(env.session.expiryProbeDue()).toBe(true);
+    await env.sync.runSync('timer');
+    expect(calls).toContain('/device/me');
+    expect(env.session.getSessionState()).toBe('active');
+    expect(env.session.expiryProbeDue()).toBe(false);
+  });
+
+  it('setting the phone clock back offline does not postpone the expiry', async () => {
+    const env = await paired(T0 + DAY);
+    env.clock.advance(DAY - 60_000);
+    await env.session.checkEntitlementExpiry(); // heure vue : T0 + DAY - 1 min
+    env.clock.advance(2 * 60_000);
+    expect(env.session.isOrgWritable()).toBe(false);
+    env.session.noteServerTime();
+    env.clock.set(T0); // horloge du téléphone reculée d'un jour
+    expect(env.session.isOrgWritable()).toBe(false);
+  });
+
+  it('a /device/me answer resets the highest server time seen', async () => {
+    const env = await paired(T0 + DAY, (c) => {
+      if (c.path === '/device/me') return reply(200, { attributedMemberId: 'member-1', organization: { id: ORG, name: 'Pharmacie du Port' }, entitlements: { stocklyMobile: true, stocklyMobileValidUntil: T0 + DAY }, serverTime: T0 });
+      return reply(404);
+    });
+    // Horloge du téléphone en avance par erreur : heure vue trop loin.
+    env.orgStore.updateSyncMeta({ serverTimeSeen: T0 + 2 * DAY });
+    expect(env.session.isOrgWritable()).toBe(false);
+    await env.session.refreshMe();
+    expect(env.orgStore.getSyncMeta().serverTimeSeen).toBe(T0);
+    expect(env.session.isOrgWritable()).toBe(true);
+  });
 });

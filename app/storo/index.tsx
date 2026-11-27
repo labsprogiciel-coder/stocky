@@ -18,7 +18,7 @@ import { useOrgData, useOutboxSummary, useStoroSession, useSyncTimer } from '../
 import type { OrgTake } from '../../data/storo/mapping';
 
 export default function OrgHome() {
-  const { session, me, state } = useStoroSession();
+  const { session, me, state, writable: canWrite } = useStoroSession();
   const { siteId, site, sync, syncing, online } = useOrgData();
   const box = useOutboxSummary();
   const [picking, setPicking] = useState(false);
@@ -49,7 +49,7 @@ export default function OrgHome() {
 
   if (!session) return <Redirect href="/(tabs)" />;
 
-  const writable = state === 'active';
+  const writable = canWrite;
   const sites = getSites();
   const takes = getSiteTakes(siteId);
   const memberId = me?.attributedMemberId ?? null;

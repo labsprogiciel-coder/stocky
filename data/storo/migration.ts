@@ -15,7 +15,7 @@ import { errorMessage } from './errors';
 import { ORG_KEYS, now, platform, readJSON, removeKey, writeJSON } from './kv';
 import { buildMigrationPayload, localUid, utf8Length } from './mapping';
 import { SAVE_ERROR, emit, setCurrentSiteId, setWorkspaceChoice } from './orgStore';
-import { applyApiError, clearMePendingMigration, getMe, getSession, getSessionState, getToken, isOrgWritable, sessionGeneration } from './session';
+import { applyApiError, clearMePendingMigration, getMe, getSession, getToken, isOrgWritable, sessionGeneration } from './session';
 
 export type LocalMigrationState =
   | 'building' | 'submitting' | 'pending_review' | 'approved' | 'rejected' | 'expired' | 'cancelled' | 'failed';
@@ -137,7 +137,7 @@ export function isMigrationPending(m: LocalMigration | null = getLocalMigration(
  */
 export function isMigrationSuspended(m: LocalMigration | null = getLocalMigration()): boolean {
   if (!isMigrationPending(m)) return false;
-  if (getSessionState() !== 'active') return true;
+  if (!isOrgWritable()) return true;
   return m!.expiresAt !== undefined && m!.expiresAt <= now();
 }
 

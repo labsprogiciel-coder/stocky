@@ -123,7 +123,34 @@ export function getWorkspace(): Workspace {
 export function entitlementExpiredAt(t: number = now()): number | null {
   const until = getMe()?.entitlements?.stocklyMobileValidUntil;
   if (typeof until !== 'number' || !Number.isFinite(until)) return null;
-  return t + (getSyncMeta().serverOffsetMs || 0) >= until ? until : null;
+  return estimatedServerNow(t) >= until ? until : null;
+}
+
+/** Heure du serveur estimée, jamais en arrière de la plus avancée déjà vue. */
+function estimatedServerNow(t: number): number {
+  const m = getSyncMeta();
+  const est = t + (m.serverOffsetMs || 0);
+  return typeof m.serverTimeSeen === 'number' && m.serverTimeSeen > est ? m.serverTimeSeen : est;
+}
+
+/** Enregistre l'heure du serveur estimée si elle avance (par pas d'une minute). */
+export function noteServerTime(t: number = now()): void {
+  const m = getSyncMeta();
+  const est = t + (m.serverOffsetMs || 0);
+  if (typeof m.serverTimeSeen !== 'number' || est - m.serverTimeSeen >= 60_000) updateSyncMeta({ serverTimeSeen: est });
+}
+
+/**
+ * Lecture seule posée sur le téléphone (fin d'abonnement vue hors ligne) et
+ * pas encore confirmée par un `/device/me` : Storo est interrogé sans attendre.
+ */
+export function expiryProbeDue(): boolean {
+  const s = getSession();
+  if (!s || s.state !== 'readonly' || s.readonlyReason !== 'entitlement') return false;
+  const d = s.readonlyDetails;
+  if (typeof d?.expiredAt !== 'number') return false;
+  const me = getMe();
+  return !me || me.fetchedAt === d.meFetchedAt;
 }
 
 /**
@@ -140,9 +167,10 @@ export const isOrgWritable = (): boolean => getSessionState() === 'active' && en
 export async function checkEntitlementExpiry(): Promise<boolean> {
   const s = getSession();
   if (!s || s.state !== 'active') return false;
+  noteServerTime();
   const at = entitlementExpiredAt();
   if (at === null) return false;
-  await setReadonly('entitlement', { feature: 'stockly_mobile', expiredAt: at });
+  await setReadonly('entitlement', { feature: 'stockly_mobile', expiredAt: at, meFetchedAt: getMe()?.fetchedAt ?? null });
   return true;
 }
 
@@ -316,7 +344,8 @@ export async function refreshMe(tokenOverride?: string): Promise<MeResult> {
   const me: DeviceMe = { ...(isRecord(r.data) ? r.data : {}), attributedMemberId: isRecord(r.data) && typeof r.data.attributedMemberId === 'string' ? r.data.attributedMemberId : null, fetchedAt: t };
   if (stale) return { ok: true, me };
   saveMe(me);
-  if (typeof me.serverTime === 'number') updateSyncMeta({ serverOffsetMs: me.serverTime - t });
+  // Heure de Storo : décalage et heure la plus avancée remis à jour (une horloge du téléphone avancée par erreur ne bloque plus rien).
+  if (typeof me.serverTime === 'number') updateSyncMeta({ serverOffsetMs: me.serverTime - t, serverTimeSeen: me.serverTime });
   const orgName = me.organization?.name;
   const cur = getSession();
   if (cur && typeof orgName === 'string' && orgName && orgName !== cur.orgName) saveSession({ ...cur, orgName });

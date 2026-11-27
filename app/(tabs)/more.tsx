@@ -475,7 +475,7 @@ function DataSection({ onChange }: { onChange: () => void }) {
 
 /** Section « Storo » : connexion, organisation, migration du stock local. */
 function StoroSection() {
-  const { session, state } = useStoroSession();
+  const { session, writable } = useStoroSession();
   const { migration, archive } = useLocalMigration();
   const pending = isMigrationPending(migration);
   const canMigrate = session !== null && !archive && (pending || canStartMigration() === null || migration !== null);
@@ -485,7 +485,7 @@ function StoroSection() {
         <SettingRow
           icon="cloud"
           label={`Organisation : ${session.orgName || 'Storo'}`}
-          value={state === 'active' ? undefined : 'lecture seule'}
+          value={writable ? undefined : 'lecture seule'}
           first
           onPress={() => router.push('/storo/settings')}
         />

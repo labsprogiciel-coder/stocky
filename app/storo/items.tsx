@@ -12,13 +12,13 @@ import { useOrgData, useStoroSession } from '../../data/storo/useStoro';
 
 export default function OrgItems() {
   const { siteId, site } = useOrgData();
-  const { state } = useStoroSession();
+  const { writable: canWrite } = useStoroSession();
   const [q, setQ] = useState('');
   const query = q.trim().toLowerCase();
   const items = getSiteItems(siteId).filter((i) =>
     !query || i.name.toLowerCase().includes(query) || i.sku.toLowerCase().includes(query) || (i.barcode ?? '').toLowerCase().includes(query),
   );
-  const writable = state === 'active';
+  const writable = canWrite;
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>

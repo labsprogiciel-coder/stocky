@@ -27,7 +27,7 @@ export default function OrgTakeScreen() {
   useStoroVersion();
   const { id: rawId } = useLocalSearchParams<{ id: string }>();
   const id = typeof rawId === 'string' ? rawId : '';
-  const { state } = useStoroSession();
+  const { writable } = useStoroSession();
   const take = getTake(id);
   const list = take ? takeItems(getAllOrgItems(), take.siteId) : [];
   const count = getCount(id);
@@ -84,7 +84,7 @@ export default function OrgTakeScreen() {
     );
   }
 
-  const readonly = state !== 'active' || take.closed === true;
+  const readonly = !writable || take.closed === true;
   const statuses = list.map((it) => countStatus(id, it.id));
   const doneCount = statuses.filter((s) => s !== 'À compter').length;
 

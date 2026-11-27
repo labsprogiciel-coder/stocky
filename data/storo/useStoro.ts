@@ -10,7 +10,7 @@ import { fmtCount } from '../store';
 import { getArchive, getLocalMigration } from './migration';
 import { getCurrentSiteId, getSite, getSyncMeta, getVersion, isOnline, isSyncing, subscribe } from './orgStore';
 import { outboxSummary } from './outbox';
-import { getMe, getSession, getSessionState, getWorkspace, type PairingOutcome } from './session';
+import { getMe, getSession, getSessionState, getWorkspace, isOrgWritable, type PairingOutcome } from './session';
 import { runSync } from './sync';
 
 /** Redessine le composant à chaque changement de l'espace organisation. */
@@ -20,7 +20,8 @@ export function useStoroVersion(): number {
 
 export function useStoroSession() {
   useStoroVersion();
-  return { session: getSession(), me: getMe(), state: getSessionState(), workspace: getWorkspace() };
+  // `writable` : session active et abonnement mobile non expiré (même hors ligne).
+  return { session: getSession(), me: getMe(), state: getSessionState(), workspace: getWorkspace(), writable: isOrgWritable() };
 }
 
 export function useOrgData() {

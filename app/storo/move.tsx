@@ -17,7 +17,7 @@ import { useStoroSession, useStoroVersion } from '../../data/storo/useStoro';
 export default function OrgMove() {
   useStoroVersion();
   const params = useLocalSearchParams<{ itemId?: string; code?: string; mode?: string }>();
-  const { state } = useStoroSession();
+  const { writable: canWrite } = useStoroSession();
   const item = typeof params.itemId === 'string' && params.itemId
     ? getOrgItem(params.itemId)
     : typeof params.code === 'string' ? lookupCode(getAllOrgItems(), getCurrentSiteId(), params.code) ?? undefined : undefined;
@@ -34,7 +34,7 @@ export default function OrgMove() {
   }
 
   const available = displayedQty(item.id);
-  const writable = state === 'active';
+  const writable = canWrite;
   const localError = qty < 1 ? 'La quantité doit être supérieure à 0.' : mode === 'Sortie' && qty > available ? `Stock insuffisant. Disponible : ${Math.max(0, available)}.` : null;
 
   const submit = () => {
