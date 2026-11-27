@@ -8,7 +8,7 @@ import { Pressable, Text, View } from 'react-native';
 import { router } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import { colors } from '../../constants/theme';
-import { fmtCount } from '../../data/store';
+import { fmtCount, fmtDateTime } from '../../data/store';
 import { GUARD_ARCHIVED, isMigrationPending, isMigrationSuspended } from '../../data/storo/migration';
 import { runSync } from '../../data/storo/sync';
 import { useLocalMigration, useOrgData, useOutboxSummary, useStoroSession } from '../../data/storo/useStoro';
@@ -69,6 +69,8 @@ export function StoroBanner({ standalone = false }: { standalone?: boolean }) {
         banners.unshift({ key: 'ro', tone: 'warning', text: `Ce téléphone est désactivé dans Storo (${st}). Lecture seule.`, action: probe });
       } else if (reason === 'org_suspended') {
         banners.unshift({ key: 'ro', tone: 'error', text: `L'organisation ${org} est suspendue. Lecture seule.` });
+      } else if (typeof session.readonlyDetails?.expiredAt === 'number') {
+        banners.unshift({ key: 'ro', tone: 'warning', text: `L'abonnement mobile de ${org} a expiré le ${fmtDateTime(session.readonlyDetails.expiredAt)}. Lecture seule jusqu'à la prochaine vérification auprès de Storo.`, action: probe });
       } else {
         banners.unshift({ key: 'ro', tone: 'warning', text: `L'abonnement de ${org} n'inclut plus l'application mobile. Lecture seule.`, action: probe });
       }

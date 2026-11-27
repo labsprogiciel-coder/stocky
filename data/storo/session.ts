@@ -115,8 +115,36 @@ export function getWorkspace(): Workspace {
   return getSession() !== null && getWorkspaceChoice() === 'org' ? 'org' : 'standalone';
 }
 
-/** Espace organisation modifiable (Entrée / Sortie, comptages) : session `active`. */
-export const isOrgWritable = (): boolean => getSessionState() === 'active';
+/**
+ * Fin de l'abonnement mobile vue au dernier `/device/me` (`stocklyMobileValidUntil`,
+ * comparée à l'heure du serveur estimée) : la date si elle est passée, sinon null.
+ * `null` côté Storo = abonnement sans date de fin.
+ */
+export function entitlementExpiredAt(t: number = now()): number | null {
+  const until = getMe()?.entitlements?.stocklyMobileValidUntil;
+  if (typeof until !== 'number' || !Number.isFinite(until)) return null;
+  return t + (getSyncMeta().serverOffsetMs || 0) >= until ? until : null;
+}
+
+/**
+ * Espace organisation modifiable (Entrée / Sortie, comptages) : session
+ * `active` et abonnement mobile non expiré, même hors ligne.
+ */
+export const isOrgWritable = (): boolean => getSessionState() === 'active' && entitlementExpiredAt() === null;
+
+/**
+ * Abonnement mobile expiré sans réponse de Storo (hors ligne) : la session
+ * passe en lecture seule (`entitlement`, `expiredAt`). Le prochain
+ * `/device/me` décide : abonnement renouvelé → session réactivée.
+ */
+export async function checkEntitlementExpiry(): Promise<boolean> {
+  const s = getSession();
+  if (!s || s.state !== 'active') return false;
+  const at = entitlementExpiredAt();
+  if (at === null) return false;
+  await setReadonly('entitlement', { feature: 'stockly_mobile', expiredAt: at });
+  return true;
+}
 
 export function getMe(): DeviceMe | null {
   if (_me === undefined) _me = readJSON<DeviceMe | null>(ORG_KEYS.me, null, isRecord);

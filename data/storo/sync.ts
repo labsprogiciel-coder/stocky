@@ -23,7 +23,7 @@ import {
   type PullPage,
 } from './orgStore';
 import { applyPushResults, chunkRows, sendableRows, setInFlight, transportBackoffMs, unparkNoAttributedMember, type PushResponse } from './outbox';
-import { applyApiError, checkTokenAtStart, dropSession, getMe, getSession, getToken, heartbeat, isPairingInProgress, refreshMe } from './session';
+import { applyApiError, checkEntitlementExpiry, checkTokenAtStart, dropSession, getMe, getSession, getToken, heartbeat, isPairingInProgress, refreshMe } from './session';
 
 export type SyncReason = 'start' | 'foreground' | 'online' | 'timer' | 'enqueue' | 'manual' | 'migration';
 
@@ -155,6 +155,8 @@ async function pull(apiBase: string, token: string, orgId: string): Promise<Sync
 
 /** Un cycle (§7.1). */
 async function cycle(reason: SyncReason): Promise<SyncResult> {
+  // Abonnement mobile expiré (date vue au dernier /device/me) : lecture seule, puis sonde Storo.
+  await checkEntitlementExpiry();
   let s = getSession();
   if (!s || s.readonlyReason === 'unpaired') return { ok: false, stopped: 'no_session' };
   // Association en cours de confirmation : ni l'ancienne session ni le nouveau jeton ne servent.
@@ -281,6 +283,7 @@ export function notifyConnectivity(connected: boolean): void {
 
 async function tick(): Promise<void> {
   if (!_foreground) return;
+  await checkEntitlementExpiry();
   const s = getSession();
   if (!s) return;
   const t = now();
