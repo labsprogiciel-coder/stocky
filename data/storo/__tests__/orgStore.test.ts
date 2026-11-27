@@ -22,6 +22,22 @@ describe('applyPullPage', () => {
     expect(env.orgStore.getSyncMeta().cursor).toBe('c2');
   });
 
+  it('rejects a malformed page without applying it or moving the cursor', async () => {
+    const env = await setup();
+    await pairActive(env);
+    seed(env);
+    const bad = [
+      { items: { upserts: {} } },
+      { sites: { upserts: 'abc' } },
+      { items: { deleted: {} } },
+      { stockTakes: 'x' },
+    ];
+    for (const b of bad) {
+      expect(() => env.orgStore.applyPullPage({ ...(b as object), cursor: 'c-bad' } as never, ORG, T0)).toThrow(env.orgStore.InvalidPullPageError);
+    }
+    expect(env.orgStore.getSyncMeta().cursor).toBe('c1');
+  });
+
   it('writes the cursor last, and nothing changes in memory when a write fails', async () => {
     const env = await setup();
     await pairActive(env);

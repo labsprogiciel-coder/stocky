@@ -355,6 +355,22 @@ export type PullPage = {
   items?: PullTable;
 };
 
+/** Erreur levée pour une page `/sync/pull` mal formée (rien n'est appliqué, le curseur ne bouge pas). */
+export class InvalidPullPageError extends Error {}
+
+/** Chaque table présente doit avoir `upserts` / `deleted` en tableaux (ou absents). */
+function assertPullPage(page: PullPage): void {
+  for (const name of ['sites', 'items', 'stockTakes'] as const) {
+    const t = (page as Record<string, unknown>)[name];
+    if (t === undefined || t === null) continue;
+    if (!isRecord(t)) throw new InvalidPullPageError(`/sync/pull : table ${name} invalide`);
+    for (const k of ['upserts', 'deleted'] as const) {
+      const v = t[k];
+      if (v !== undefined && v !== null && !Array.isArray(v)) throw new InvalidPullPageError(`/sync/pull : ${name}.${k} invalide`);
+    }
+  }
+}
+
 const ids = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
 
 /**
@@ -364,6 +380,7 @@ const ids = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is str
  * `siteCleared` : le site courant a disparu (choisir un autre site).
  */
 export function applyPullPage(page: PullPage, orgId: string, nowMs: number): { ok: boolean; siteCleared: boolean } {
+  assertPullPage(page);
   const s = st();
   const sites = new Map(s.sites.map((x) => [x.id, x]));
   for (const row of page.sites?.upserts ?? []) {
