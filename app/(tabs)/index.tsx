@@ -5,6 +5,8 @@ import { Screen, H1, H2, Card, Btn, Progress, Row, Thumb, Muted, Icon, EmptyStat
 import { colors } from '../../constants/theme';
 import { getItems, getMovements, getCycleCount, fmtCount, fmtTime, fmtDateTime } from '../../data/store';
 import { isPersistent } from '../../data/storage';
+import { WorkspaceSwitcher } from '../../components/storo/WorkspaceSwitcher';
+import { StoroBanner } from '../../components/storo/StoroBanner';
 
 const actions = [
   { icon: 'maximize', label: 'Scanner', primary: true, go: () => router.push('/scan') },
@@ -41,6 +43,9 @@ export default function Home() {
     : count.done > 0 ? 'Reprendre le comptage' : 'Commencer le comptage';
   return (
     <Screen>
+      {/* Espace de travail (affiché seulement si le téléphone est associé à Storo). */}
+      <WorkspaceSwitcher current="standalone" />
+      <StoroBanner standalone />
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
         <H1>Aujourd'hui</H1>
         <View

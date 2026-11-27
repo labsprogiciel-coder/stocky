@@ -193,7 +193,7 @@ export default function Count() {
         'Les résultats de ce comptage seront effacés. Les ajustements de stock déjà appliqués sont conservés.',
         [
           { text: 'Annuler', style: 'cancel' },
-          { text: 'Recommencer', style: 'destructive', onPress: () => { restartCount(id); reload(); } },
+          { text: 'Recommencer', style: 'destructive', onPress: () => { const err = restartCount(id); if (err) Alert.alert('Comptage non recommencé', err); reload(); } },
         ]
       );
     };

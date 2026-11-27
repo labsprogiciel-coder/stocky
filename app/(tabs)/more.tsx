@@ -20,6 +20,8 @@ import {
   removeLicense,
 } from '../../data/license';
 import { alertProFeature } from '../../components/ProNotice';
+import { canStartMigration, isMigrationPending } from '../../data/storo/migration';
+import { useLocalMigration, useStoroSession } from '../../data/storo/useStoro';
 
 // ── Mock user data (replace with real auth context later) ──────────────────
 const USER = {
@@ -471,6 +473,37 @@ function DataSection({ onChange }: { onChange: () => void }) {
 
 // ── Screen ─────────────────────────────────────────────────────────────────
 
+/** Section « Storo » : connexion, organisation, migration du stock local. */
+function StoroSection() {
+  const { session, state } = useStoroSession();
+  const { migration, archive } = useLocalMigration();
+  const pending = isMigrationPending(migration);
+  const canMigrate = session !== null && !archive && (pending || canStartMigration() === null || migration !== null);
+  return (
+    <SettingCard>
+      {session ? (
+        <SettingRow
+          icon="cloud"
+          label={`Organisation : ${session.orgName || 'Storo'}`}
+          value={state === 'active' ? undefined : 'lecture seule'}
+          first
+          onPress={() => router.push('/storo/settings')}
+        />
+      ) : (
+        <SettingRow icon="cloud" label="Connecter à Storo" first onPress={() => router.push('/storo/connect')} />
+      )}
+      {canMigrate && (
+        <SettingRow
+          icon="upload-cloud"
+          label={pending ? 'Transfert vers Storo en attente' : 'Migrer mon stock vers Storo'}
+          onPress={() => router.push('/storo/migrate')}
+        />
+      )}
+      {archive && <SettingRow icon="archive" label="Stock local archivé (transféré dans Storo)" onPress={() => router.push('/storo/settings')} />}
+    </SettingCard>
+  );
+}
+
 export default function Profile() {
   const [vibration, setVibration] = useState(() => getPrefs().vibration);
   const [info, setInfo] = useState(() => getStorageInfo());
@@ -544,7 +577,11 @@ export default function Profile() {
           text: 'Réinitialiser',
           style: 'destructive',
           onPress: () => {
-            resetAllData();
+            const error = resetAllData();
+            if (error) {
+              Alert.alert('Données non réinitialisées', error);
+              return;
+            }
             setInfo(getStorageInfo());
             setVibration(getPrefs().vibration);
             setDataVersion((n) => n + 1); // utilisation x/50 · y/100 de Stockly Pro
@@ -614,6 +651,10 @@ export default function Profile() {
           <ProSection refreshKey={dataVersion} onChange={() => { setPro(isProActive()); setInfo(getStorageInfo()); }} />
         </View>
         )}
+
+        {/* ── STORO ──────────────────────────────────────────────────── */}
+        <SectionLabel label="STORO" />
+        <StoroSection />
 
         {/* ── COMPTE ─────────────────────────────────────────────────── */}
         <SectionLabel label="COMPTE" />
