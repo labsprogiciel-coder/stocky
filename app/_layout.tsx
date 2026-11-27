@@ -1,13 +1,29 @@
-import { useEffect } from 'react';
-import { Stack } from 'expo-router';
+import { useEffect, useRef } from 'react';
+import { Stack, router, useRootNavigationState } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { colors } from '../constants/theme';
 // Enregistre la suppression des fichiers photo auprès du store (voir data/photos.ts).
 import { sweepOrphanPhotos } from '../data/photos';
 // Enregistre la vérification de la licence Stockly Pro auprès du store (limites de la version gratuite).
 import { getLicenseStatus } from '../data/license';
+// Espace organisation (Storo) : stockage `stockly-org`, jeton sécurisé, garde du stock local, synchronisation.
+import { startStoro } from '../data/storo/native';
+import { getWorkspace } from '../data/storo/session';
 
 export default function RootLayout() {
+  const navState = useRootNavigationState();
+  const reopened = useRef(false);
+
+  // Synchronisation Storo : NetInfo, retour au premier plan, minuteries, premier cycle.
+  useEffect(() => startStoro(), []);
+
+  // Au lancement, l'application rouvre l'espace organisation s'il était le dernier choisi.
+  useEffect(() => {
+    if (reopened.current || !navState?.key) return;
+    reopened.current = true;
+    if (getWorkspace() === 'org') router.replace('/storo');
+  }, [navState?.key]);
+
   // Supprime au démarrage les photos qu'aucun article ne référence.
   useEffect(() => {
     sweepOrphanPhotos();
@@ -33,6 +49,7 @@ export default function RootLayout() {
         <Stack.Screen name="unit/new" options={{ title: 'Nouvel appareil', headerBackTitle: 'Retour' }} />
         <Stack.Screen name="unit/[id]" options={{ title: 'Appareil', headerBackTitle: 'Retour' }} />
         <Stack.Screen name="import" options={{ title: 'Importer depuis Excel', headerBackTitle: 'Retour' }} />
+        <Stack.Screen name="storo" options={{ headerShown: false }} />
       </Stack>
     </>
   );

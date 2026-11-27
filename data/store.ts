@@ -516,6 +516,33 @@ export function setPhotoFileHooks(hooks: PhotoFileHooks | null): void {
   _photoHooks = hooks;
 }
 
+let _standaloneGuard: (() => string | null) | null = null;
+
+/**
+ * Garde du stock local, enregistrée par `data/storo/migration.ts` : tant
+ * qu'une migration vers Storo attend sa validation, ou après le transfert
+ * (stock archivé), elle renvoie le message à afficher et chaque mutation est
+ * refusée AVANT tout changement. Les lectures, la sauvegarde et les exports
+ * ne sont pas concernés. `null` : aucune garde (stock modifiable).
+ */
+export function setStandaloneGuard(fn: (() => string | null) | null): void {
+  _standaloneGuard = fn;
+}
+
+/** Message de la garde, ou `null` si le stock local est modifiable. Ne lève jamais. */
+export function standaloneReadonlyMessage(): string | null {
+  return guardMessage();
+}
+
+function guardMessage(): string | null {
+  try {
+    return _standaloneGuard?.() ?? null;
+  } catch (e) {
+    console.warn('[store] Garde du stock local indisponible.', e);
+    return null;
+  }
+}
+
 /** Supprime un fichier photo (best effort, ne lève jamais). */
 function removePhotoFile(name: string | undefined): void {
   if (!name) return;
@@ -1368,6 +1395,7 @@ function validateNewItem(
 }
 
 export function createItem(input: NewItemInput): CreateItemResult {
+  { const g = guardMessage(); if (g) return { error: g }; }
   if (refuseUntrusted()) return { error: SAVE_ERROR };
   const limitError = itemLimitError();
   if (limitError) return { error: limitError, limit: 'items' };
@@ -1392,6 +1420,7 @@ export function createItem(input: NewItemInput): CreateItemResult {
  * fichier est supprimé après l'enregistrement.
  */
 export function updateItem(id: string, patch: UpdateItemPatch): UpdateItemResult {
+  { const g = guardMessage(); if (g) return { error: g }; }
   if (refuseUntrusted()) return { error: SAVE_ERROR };
   const current = getItem(id);
   if (!current) return { error: 'Article introuvable.', field: 'id' };
@@ -1480,6 +1509,7 @@ export function updateItem(id: string, patch: UpdateItemPatch): UpdateItemResult
  * l'une de ses unités, et sa photo.
  */
 export function deleteItem(id: string): DeleteItemResult {
+  { const g = guardMessage(); if (g) return { ok: false, error: g }; }
   if (refuseUntrusted()) return { ok: false, error: SAVE_ERROR };
   const item = getItem(id);
   if (!item) return { ok: false, error: 'Article introuvable.' };
@@ -1548,6 +1578,7 @@ export function getMovements(): Movement[] {
 
 /** Enregistre un mouvement Entrée/Sortie. Renvoie un message d'erreur ou null. */
 export function commitMovement(code: string, mode: MovementMode, qty: number): string | null {
+  { const g = guardMessage(); if (g) return g; }
   if (refuseUntrusted()) return SAVE_ERROR;
   const item = findItemByCode(code);
   if (!item) return findUnitByCode(code) ? SERIALIZED_MOVEMENT_ERROR : 'Article introuvable.';
@@ -1566,6 +1597,7 @@ export function commitMovement(code: string, mode: MovementMode, qty: number): s
 
 /** Ajuste le stock depuis la fiche article. Renvoie un message d'erreur ou null. */
 export function adjustStock(itemId: string, newQty: number): string | null {
+  { const g = guardMessage(); if (g) return g; }
   if (refuseUntrusted()) return SAVE_ERROR;
   const item = getItem(itemId);
   if (!item) return 'Article introuvable.';
@@ -1760,6 +1792,7 @@ function applyUnit(prev: Unit, next: Unit): boolean {
  * série. Un appareil « En stock » enregistre une Entrée de 1.
  */
 export function addUnit(itemId: string, input: NewUnitInput): UnitResult {
+  { const g = guardMessage(); if (g) return { error: g }; }
   const item = getItem(itemId);
   if (!item) return { error: 'Article introuvable.', field: 'itemId' };
   if (!item.serialized) {
@@ -1788,6 +1821,7 @@ export function addUnit(itemId: string, input: NewUnitInput): UnitResult {
  * Sortie de 1 ; un retour en stock, une Entrée de 1.
  */
 export function updateUnit(id: string, patch: UpdateUnitPatch): UnitResult {
+  { const g = guardMessage(); if (g) return { error: g }; }
   const current = getUnit(id);
   if (!current) return { error: 'Numéro de série introuvable.', field: 'id' };
   const status = patch.status ?? current.status;
@@ -1821,6 +1855,7 @@ export function updateUnit(id: string, patch: UpdateUnitPatch): UnitResult {
  * recalculée) ; les comptages terminés gardent leur instantané.
  */
 export function deleteUnit(id: string): DeleteUnitResult {
+  { const g = guardMessage(); if (g) return { ok: false, error: g }; }
   const unit = getUnit(id);
   if (!unit) return { ok: false, error: 'Numéro de série introuvable.' };
   const snap = snapshot();
@@ -1921,6 +1956,7 @@ function writableSession(id: string): CountSession | string {
  * des unités trouvées (absent = aucune) et `qty` est ignoré (= leur nombre).
  */
 export function saveCountEntry(id: string, itemId: string, entry: CountEntry): string | null {
+  { const g = guardMessage(); if (g) return g; }
   if (refuseUntrusted()) return SAVE_ERROR;
   if (id !== CYCLE_COUNT.id) return 'Comptage introuvable.';
   const list = getCountItems(id);
@@ -1954,6 +1990,7 @@ export function saveCountEntry(id: string, itemId: string, entry: CountEntry): s
  * second scan de la même unité ne change rien (`duplicate: true`).
  */
 export function markUnitFound(countId: string, code: string): MarkUnitFoundResult {
+  { const g = guardMessage(); if (g) return { ok: false, error: g }; }
   if (countId !== CYCLE_COUNT.id) return { ok: false, error: 'Comptage introuvable.' };
   const unit = findUnitByCode(code);
   if (!unit) return { ok: false, error: `Numéro de série inconnu : ${code.trim()}` };
@@ -1978,6 +2015,7 @@ export function markUnitFound(countId: string, code: string): MarkUnitFoundResul
 
 /** Retire une unité des unités trouvées (scan par erreur). Renvoie un message d'erreur ou null. */
 export function unmarkUnitFound(countId: string, unitId: string): string | null {
+  { const g = guardMessage(); if (g) return g; }
   if (countId !== CYCLE_COUNT.id) return 'Comptage introuvable.';
   const unit = getUnit(unitId);
   if (!unit) return 'Numéro de série introuvable.';
@@ -2059,6 +2097,7 @@ export function setCountIndex(id: string, idx: number): void {
  *   dérivé est recalculé.
  */
 export function completeCount(id: string, applyAdjustments: boolean): CompleteCountResult {
+  { const g = guardMessage(); if (g) return { ok: false, error: g }; }
   if (id !== CYCLE_COUNT.id) return { ok: false, error: 'Comptage introuvable.' };
   if (getCountItems(id).length === 0) {
     return { ok: false, error: 'Aucun article à compter. Ajoutez des articles avant de terminer le comptage.' };
@@ -2128,14 +2167,15 @@ export function completeCount(id: string, applyAdjustments: boolean): CompleteCo
   return { ok: true, adjusted, unitsUpdated };
 }
 
-/** Démarre une nouvelle session (la précédente est effacée). */
-export function restartCount(id: string): void {
-  if (refuseUntrusted()) return;
-  if (id !== CYCLE_COUNT.id) return;
+/** Démarre une nouvelle session (la précédente est effacée). Renvoie un message d'erreur ou null. */
+export function restartCount(id: string): string | null {
+  { const g = guardMessage(); if (g) return g; }
+  if (refuseUntrusted()) return SAVE_ERROR;
+  if (id !== CYCLE_COUNT.id) return 'Comptage introuvable.';
   const s = state();
   s.sessions = { ...s.sessions, [id]: freshSession(id) };
   _pendingCountScans.delete(id);
-  persist('sessions');
+  return persist('sessions') ? null : SAVE_ERROR;
 }
 
 /** Code scanné pendant un comptage, transmis à l'écran de comptage au retour. */
@@ -2586,6 +2626,7 @@ export function importInventory(records: readonly ImportRecord[], opts: { dryRun
   }
   const plan = planImport(records);
   if (opts.dryRun) return { ok: true, summary: plan.summary };
+  { const g = guardMessage(); if (g) return { ok: false, error: g }; }
   if (plan.newItems.length === 0 && plan.newUnits.length === 0) {
     return { ok: false, error: 'Aucune ligne à importer.', summary: plan.summary };
   }
@@ -2947,6 +2988,7 @@ export type RestoreResult = { ok: true; photosRemoved: number } | { ok: false; e
  * En cas d'échec, `plan` reste utilisable pour réessayer.
  */
 export function applyRestore(plan: RestorePlan): RestoreResult {
+  { const g = guardMessage(); if (g) return { ok: false, error: g }; }
   const next = _restorePlans.get(plan);
   if (!next) return { ok: false, error: 'Sauvegarde déjà restaurée. Choisissez à nouveau le fichier.' };
   if (refuseUntrusted()) return { ok: false, error: UNTRUSTED_DATA_ERROR };
@@ -2993,7 +3035,8 @@ export function applyRestore(plan: RestorePlan): RestoreResult {
  * Efface toutes les données de l'appareil (préférences et photos comprises) :
  * l'application repart vide.
  */
-export function resetAllData(): void {
+export function resetAllData(): string | null {
+  { const g = guardMessage(); if (g) return g; }
   removeAllPhotoFiles();
   clearAll(); // efface aussi le journal d'écriture
   // Si l'effacement a échoué, un journal peut subsister : `save` le traite
@@ -3004,6 +3047,7 @@ export function resetAllData(): void {
   _pendingPicks.clear();
   _state = blankState();
   persistAll();
+  return null;
 }
 
 /**
@@ -3012,6 +3056,7 @@ export function resetAllData(): void {
  * Utilisé uniquement depuis Profil › Stockage local.
  */
 export function loadSampleData(): string | null {
+  { const g = guardMessage(); if (g) return g; }
   // Mémoire non fiable : refusé sans rien modifier (ni données, ni photos).
   if (refuseUntrusted()) return SAVE_ERROR;
   const prev = state();

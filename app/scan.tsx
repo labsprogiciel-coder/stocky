@@ -26,6 +26,12 @@
  *   un rôle (N° de série, IMEI 1, IMEI 2, Code produit, Autre — règles
  *   génériques de `data/boxLabel.ts`), l'article est déduit du code produit
  *   (`data/boxDevice.ts`) et « Ajouter l'appareil » l'enregistre en une fois.
+ * - `?storo=pair|take|move` (exclusif des précédents) : espace organisation
+ *   (Storo). Le premier code lu est transmis à l'écran appelant
+ *   (`setPendingStoroScan`), sans recherche dans le stock local :
+ *   `pair` = QR code d'association (saisie manuelle masquée), `take` (avec
+ *   `&takeId=…`) = article d'un comptage Storo, `move` = article pour une
+ *   Entrée / Sortie Storo.
  */
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { View, Text, Pressable, StyleSheet, Alert, TextInput, Vibration, KeyboardAvoidingView, Platform, Linking, ScrollView } from 'react-native';
@@ -81,6 +87,7 @@ import {
   type Unit,
   type UnitStatus,
 } from '../data/store';
+import { setPendingStoroScan } from '../data/storo/orgStore';
 
 const BARCODE_TYPES: BarcodeType[] = ['ean13', 'ean8', 'upc_a', 'upc_e', 'code128', 'code39', 'qr'];
 
@@ -116,14 +123,20 @@ function resolveCode(code: string): Match {
 type Feedback = { kind: 'ok' | 'error' | 'info'; text: string; unitId?: string; pro?: boolean };
 
 export default function Scan() {
-  const params = useLocalSearchParams<{ countId?: string; multi?: string; pick?: string; addItemId?: string; box?: string }>();
-  const countTarget = typeof params.countId === 'string' && params.countId.length > 0 ? params.countId : null;
+  const params = useLocalSearchParams<{ countId?: string; multi?: string; pick?: string; addItemId?: string; box?: string; storo?: string; takeId?: string }>();
+  // Espace organisation (Storo) : le code lu est rendu à l'écran appelant, rien d'autre.
+  const storoTarget: string | null = params.storo === 'pair' || params.storo === 'move'
+    ? params.storo
+    : params.storo === 'take' && typeof params.takeId === 'string' && params.takeId.length > 0
+    ? `take:${params.takeId}`
+    : null;
+  const countTarget = !storoTarget && typeof params.countId === 'string' && params.countId.length > 0 ? params.countId : null;
   const countMode = countTarget !== null;
   const multiCount = countMode && params.multi === '1';
-  const pickTarget: PickTarget | null = !countMode && (params.pick === 'serial' || params.pick === 'imei' || params.pick === 'imei2') ? params.pick : null;
-  const launchedBox = !countMode && !pickTarget && params.box === '1';
+  const pickTarget: PickTarget | null = !storoTarget && !countMode && (params.pick === 'serial' || params.pick === 'imei' || params.pick === 'imei2') ? params.pick : null;
+  const launchedBox = !storoTarget && !countMode && !pickTarget && params.box === '1';
   const paramAddId = typeof params.addItemId === 'string' && params.addItemId.length > 0 ? params.addItemId : null;
-  const launchedAddId = !countMode && !pickTarget && !launchedBox ? paramAddId : null;
+  const launchedAddId = !storoTarget && !countMode && !pickTarget && !launchedBox ? paramAddId : null;
 
   const [perm, requestPerm] = useCameraPermissions();
   const [torch, setTorch] = useState(false);
@@ -224,8 +237,8 @@ export default function Scan() {
   const unknownCode = code !== null && match === null;
   const addTargetRaw = addTargetId ? getItem(addTargetId) : undefined;
   const addTarget = addTargetRaw?.serialized ? addTargetRaw : null;
-  const addLoop = addTarget !== null && !countMode && !pickTarget;
-  const boxMode = boxActive && !countMode && !pickTarget;
+  const addLoop = addTarget !== null && !storoTarget && !countMode && !pickTarget;
+  const boxMode = boxActive && !storoTarget && !countMode && !pickTarget;
   const loop = addLoop || multiCount || boxMode;
 
   // « Scanner une boîte » : rôles des codes, article cible, doublons.
@@ -583,6 +596,12 @@ export default function Scan() {
       if (getPrefs().vibration) Vibration.vibrate(60);
     }
 
+    if (storoTarget) {
+      setPendingStoroScan(storoTarget, data);
+      router.back();
+      return;
+    }
+
     if (pickTarget) {
       setPendingPick(pickTarget, data);
       router.back();
@@ -730,7 +749,13 @@ export default function Scan() {
   const camGranted = !!perm?.granted;
   const scanning = !code && !manualOpen;
 
-  const hint = pickTarget === 'serial'
+  const hint = storoTarget === 'pair'
+    ? 'Scannez le QR code affiché dans Storo'
+    : storoTarget === 'move'
+    ? "Scannez l'article (code-barres ou référence)"
+    : storoTarget
+    ? 'Scannez un article du comptage'
+    : pickTarget === 'serial'
     ? "Scannez le numéro de série de l'appareil"
     : pickTarget === 'imei'
     ? "Scannez l'IMEI de l'appareil"
@@ -746,7 +771,9 @@ export default function Scan() {
     ? "Filmez l'étiquette de la boîte : tous ses codes sont lus"
     : 'Placez le code dans le cadre';
 
-  const manualHelp = pickTarget === 'serial'
+  const manualHelp = storoTarget
+    ? "Saisissez le code-barres ou la référence (SKU) de l'article Storo."
+    : pickTarget === 'serial'
     ? "Saisissez le numéro de série de l'appareil."
     : pickTarget === 'imei'
     ? "Saisissez l'IMEI (15 chiffres)."
@@ -811,7 +838,7 @@ export default function Scan() {
           <View style={[styles.maskBottom, loop && styles.maskBottomLoop]}>
             <View style={{ alignItems: 'center', gap: 12 }}>
               <Text style={styles.hintText}>{hint}</Text>
-              {!loop && !countMode && !pickTarget && (
+              {!loop && !countMode && !pickTarget && !storoTarget && (
                 <Pressable
                   accessibilityRole="button"
                   accessibilityHint="Lit tous les codes de l'étiquette d'une boîte (numéro de série, IMEI, code produit) pour ajouter l'appareil en une fois"
@@ -823,7 +850,7 @@ export default function Scan() {
                 </Pressable>
               )}
             </View>
-            {!loop && <ManualButton onPress={() => setManualOpen(true)} />}
+            {!loop && storoTarget !== 'pair' && <ManualButton onPress={() => setManualOpen(true)} />}
           </View>
         </View>
       )}
@@ -839,7 +866,7 @@ export default function Scan() {
           ) : (
             <Btn title="Ouvrir les réglages" onPress={() => { void Linking.openSettings(); }} />
           )}
-          {!loop && <Btn title="Saisie manuelle" variant="outline" onPress={() => setManualOpen(true)} />}
+          {!loop && storoTarget !== 'pair' && <Btn title="Saisie manuelle" variant="outline" onPress={() => setManualOpen(true)} />}
         </SafeAreaView>
       )}
 

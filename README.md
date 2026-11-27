@@ -2,7 +2,7 @@
 
 Application de terrain pour la gestion de stock : accueil orienté tâches, liste des articles, fiche détail, scanner de codes-barres (entrées / sorties), suivi des appareils par numéro de série (export Jira Service Management Assets), tâches et comptage cyclique.
 
-L'application fonctionne **entièrement hors ligne**, sans serveur : articles, mouvements, comptages et préférences sont enregistrés sur l'appareil. Au premier lancement, elle démarre **vide** (aucun article, aucun mouvement, aucun comptage) ; les données d'exemple de `data/mock.ts` ne sont chargées qu'à la demande (Profil › Stockage local › « Charger les données d'exemple »).
+L'application fonctionne **entièrement hors ligne**, sans serveur : articles, mouvements, comptages et préférences sont enregistrés sur l'appareil (espace « Mon stock »). Le téléphone peut en plus être **associé à une organisation Storo** (facultatif, voir « Connexion à Storo ») : un second espace de travail, distinct, permet alors de compter les inventaires Storo et d'enregistrer des entrées / sorties sur le stock de l'organisation, hors ligne puis synchronisés. Au premier lancement, elle démarre **vide** (aucun article, aucun mouvement, aucun comptage) ; les données d'exemple de `data/mock.ts` ne sont chargées qu'à la demande (Profil › Stockage local › « Charger les données d'exemple »).
 
 ## Premier lancement et états vides
 
@@ -22,7 +22,8 @@ Tant qu'une liste ou une carte n'a pas de contenu, l'écran affiche un état vid
 - Clés versionnées (`schemaVersion` = 1, données sous `v1.items`, `v1.units`, `v1.movements`, `v1.countSessions`, `v1.prefs`, `v1.meta`). `v1.units` (appareils suivis par numéro de série) est un ajout rétrocompatible : une installation existante sans cette clé démarre simplement sans appareil, sans changement de schéma. Les entrées invalides sont ignorées ; si les articles stockés sont absents, illisibles ou tous invalides, l'application démarre avec un inventaire vide (préférences conservées) — aucune donnée d'exemple n'est injectée. Une liste d'articles vide est valide. Les données existantes valides ne sont jamais écrasées.
 - **Écritures sur plusieurs clés** : MMKV n'écrit pas plusieurs clés de façon atomique. Chaque enregistrement écrit d'abord un journal (`v1.txn`, valeurs brutes avant/après de chaque clé), puis les clés, puis supprime le journal. Si l'application s'arrête ou si une écriture échoue en cours de route, le journal restant est traité au lancement suivant (avant toute lecture) ou au prochain enregistrement : toutes les clés à « après » → enregistrement terminé ; sinon toutes sont remises à « avant ». Le stockage ne garde donc jamais une moitié d'opération (par ex. un appareil sans son mouvement). Clé absente = aucun enregistrement en cours (ajout rétrocompatible, schéma inchangé). Si le journal ou une clé ne peut pas être lu, rien n'est décidé : le journal est conservé, rien n'est réécrit depuis la mémoire chargée, et celle-ci est rechargée depuis le stockage une fois la réparation faite.
 - MMKV est un module natif : il faut un **build de développement** (`eas build --profile development` ou `npx expo run:android`). Dans **Expo Go**, le module est absent : l'application fonctionne quand même mais avec un **stockage temporaire** en mémoire (bandeau « Stockage temporaire » sur l'accueil et dans Profil), perdu à la fermeture.
-- **Réinitialiser** : Profil › Stockage local › « Réinitialiser les données » efface tout (articles, photos, mouvements, comptages et préférences) : l'application repart vide. La licence Stockly Pro est conservée. Pensez à faire une sauvegarde avant (voir « Sauvegarde et restauration »).
+- **Réinitialiser** : Profil › Stockage local › « Réinitialiser les données » efface tout (articles, photos, mouvements, comptages et préférences) : l'application repart vide. La licence Stockly Pro est conservée, ainsi que les données Storo (instance MMKV séparée, voir ci-dessous). Refusé tant qu'une migration vers Storo est en attente ou que le stock local est archivé (« Migrer vers Storo »).
+- **Données Storo** : l'espace organisation est enregistré dans une instance MMKV distincte, `stockly-org` (clés `v1.org.*` : session, cache des sites / articles / comptages ouverts, comptages en cours, file d'envoi, migration, archive), jamais touchée par « Réinitialiser les données » ni par le changement de `schemaVersion`. Le seul secret, le jeton de l'appareil, est dans **expo-secure-store** (`stockly.storo.deviceToken`, « cet appareil uniquement »). Pensez à faire une sauvegarde avant (voir « Sauvegarde et restauration »).
 - **Données d'exemple** : Profil › Stockage local › « Charger les données d'exemple » remplace, après confirmation, les articles, appareils, mouvements et comptages actuels par le jeu d'exemple de `data/mock.ts` (8 articles suivis en quantité, 3 articles suivis par numéro de série avec 7 appareils — un smartphone avec IMEI dont un double SIM (IMEI 2) et un en réparation, un ordinateur portable dont un attribué, un casque —, une coque suivie en quantité, et 2 mouvements) ; les préférences sont conservées.
 - **Volume** : MMKV garde tout l'état en mémoire et réécrit la liste concernée à chaque modification ; c'est adapté à quelques milliers d'appareils (et d'articles) par appareil mobile. Au-delà (dizaines de milliers de numéros de série), il faudrait passer à une base locale indexée (ex. SQLite).
 
@@ -150,6 +151,7 @@ Règles de reconnaissance (`data/boxLabel.ts`, **génériques** pour l'instant) 
 - `app/scan.tsx` lit les codes avec **expo-camera** (EAN-13, EAN-8, UPC-A, UPC-E, Code 128, Code 39, QR) et vibre brièvement à chaque lecture (désactivable : Profil › Vibration au scan).
 - **Saisie manuelle** : bouton sur l'écran de scan pour taper un code-barres ou un SKU (utile sur simulateur ou sans caméra).
 - Le code est recherché par numéro de série / IMEI d'appareil, puis par code-barres ou SKU (voir « Suivi par numéro de série » ci-dessus). Code inconnu → « Créer l'article » ouvre le formulaire `article/new` prérempli ; au retour, l'article créé est retrouvé et le mouvement Entrée / Sortie peut être saisi. « Ajouter comme appareil » l'enregistre comme numéro de série.
+- **Espace Storo** : `/scan?storo=pair|take|move` rend le premier code lu à l'écran appelant, sans recherche dans le stock local : `pair` = QR code d'association (saisie manuelle masquée), `take` (`&takeId=…`) = article d'un comptage Storo, `move` = article d'une Entrée / Sortie Storo (recherche par code-barres, puis SKU, parmi les articles du site courant ; ni création d'article, ni numéros de série).
 - Pendant un comptage cyclique, « Scanner » ouvre `/scan?countId=…` : le code lu renvoie directement sur l'article correspondant du comptage. La progression du comptage est enregistrée ; à la fin, les écarts peuvent être appliqués au stock ou ignorés.
 - **Export CSV d'un comptage** : bouton « Exporter (CSV) » sur l'écran de comptage (en cours ou terminé) et sur la carte du comptage dans Tâches › Terminées. Le fichier (`stockly-comptage-<id>-<aaaammjj>-<hhmm>.csv`) est écrit dans le cache avec **expo-file-system** puis partagé avec **expo-sharing** (repli : partage du texte si ces modules natifs sont absents). Format prévu pour Excel en français : séparateur `;`, **UTF-8 avec BOM**, fins de ligne CRLF. Il contient un en-tête (comptage, dossier, statut, dates, comptage à l'aveugle), une ligne par article (SKU, code-barres, article, dossier, stock attendu, quantité comptée, écart, statut) et les totaux. Le stock attendu est celui mémorisé à la clôture du comptage (avant ajustement) ; pour un comptage en cours, c'est le stock actuel, sauf en comptage à l'aveugle où le stock attendu et les écarts ne sont exportés qu'une fois le comptage terminé. Les SKU et codes-barres composés uniquement de chiffres sont écrits `="…"` pour qu'Excel les garde en texte (zéros de tête conservés).
 
@@ -208,7 +210,9 @@ Profil › Import / Export : « Exporter les appareils (Excel) » (`stockly-appa
 
 > **Contrôle de licence actuellement désactivé** (`constants/license.ts > LICENSE_ENFORCED = false`) : tous les téléphones fonctionnent comme en Pro (aucune limite, imports / exports ouverts, aucune invitation « Découvrir Stockly Pro ») et la section « Stockly Pro » de Profil est masquée. Le mécanisme décrit ci-dessous reste en place : passez la constante à `true` pour le réactiver (mise à jour OTA suffisante). Une licence déjà activée sur un téléphone reste enregistrée et redevient effective à la réactivation.
 
-Offre : **150 000 FCFA / an, pour 1 société et jusqu'à 2 téléphones**. Chaque téléphone garde son propre inventaire (aucun serveur, aucune synchronisation) : une licence = un code d'activation par téléphone.
+Offre : **150 000 FCFA / an, pour 1 société et jusqu'à 2 téléphones**. Chaque téléphone garde son propre inventaire « Mon stock » (aucun serveur, aucune synchronisation) : une licence = un code d'activation par téléphone.
+
+**Licence et Storo** : la licence STK1 ne concerne que « Mon stock ». L'espace organisation (Storo) n'a **aucune limite Stocky** (ni 50 articles / 100 appareils, ni fonctions Pro) tant que l'abonnement de l'organisation inclut l'application mobile (droit `stockly_mobile`, lu dans `/device/me` et vérifié par Storo à chaque appel). Hors ligne, le téléphone applique aussi la date de fin vue au dernier `/device/me` (`stocklyMobileValidUntil`, comparée à l'heure du serveur ; sans date = sans fin) : une fois passée, plus aucune Entrée / Sortie ni saisie de comptage n'est acceptée jusqu'à ce que Storo confirme un abonnement renouvelé ; sans ce droit, ou si le téléphone est dissocié, désactivé ou l'organisation suspendue, l'espace organisation passe en lecture seule (bandeau) et « Mon stock » suit toujours sa licence. Migrer vers Storo ne demande pas Stockly Pro. Associer ou dissocier le téléphone ne change jamais la licence.
 
 | | Gratuit | Pro |
 |---|---|---|
@@ -249,12 +253,55 @@ pnpm license:issue --company "Ets Diallo" --phone 0W3G-E1R7-0W3G-E1RS --expires 
 - **`licensePublicKey` doit être la vraie clé dès le premier build vendu** : `expo.extra` fait partie du *fingerprint* (`runtimeVersion`), donc une modification de `app.json` exige un **nouveau build** (une mise à jour OTA n'atteint pas les builds existants). Un build publié avec la valeur provisoire ne peut jamais activer Pro.
 - `LICENSE_CONTACT` (`constants/license.ts`) est du JavaScript : il se modifie par une mise à jour OTA (EAS Update) ou un build.
 
+## Connexion à Storo
+
+Storo est le logiciel de gestion de stock multi-sites de l'organisation (tableau de bord web). Stocky peut s'y connecter comme **appareil** (`kind: "stockly_mobile"`) ; le contrat partagé est `docs/STOCKY_SYNC.md` du dépôt Storo (et `CLIENT_INTEGRATION.md`). Sans association, rien ne change : l'application reste autonome.
+
+### Association (Profil › Storo › « Connecter à Storo »)
+
+- **Avec un code** (`app/storo/otp.tsx`) : le téléphone demande un code à 8 caractères (`XXXX-XXXX`, valable 15 min) au serveur configuré (`app.json > expo.extra.storoApiBase`) et l'affiche avec un compte à rebours ; un responsable le saisit dans Storo › Paramètres › Appareils. Le téléphone interroge le serveur toutes les 3 s (écran affiché, application au premier plan) ; « Code expiré » → « Nouveau code ».
+- **Avec un QR code** (`app/storo/connect.tsx`) : « Scanner le QR code » ouvre le scanner (`/scan?storo=pair`) sur le QR affiché par Storo. Il n'est accepté que s'il est un QR d'association Storo (`app: "storo"`, `v: 2`, `kind: "pair"`), en `https://` vers un serveur listé dans `app.json > expo.extra.storoAllowedHosts`, et non expiré. En cas d'erreur réseau, la même demande est renvoyée une fois après 3 s.
+- Le téléphone envoie son **code du téléphone** (celui de la licence, `XXXX-XXXX-XXXX-XXXX`) comme numéro de série, son modèle, la version de l'application et le système. Sans code du téléphone lisible, l'association est refusée (« Code du téléphone indisponible : relancez l'application. »).
+- Le jeton reçu est enregistré dans **expo-secure-store** ; il n'est envoyé qu'à un serveur en `https://` autorisé (`storoAllowedHosts` ou serveur configuré) : un `apiBase` renvoyé par Storo à l'association n'est retenu que s'il est sur la même origine que le serveur qui a répondu, et une session enregistrée vers un serveur non sûr est ignorée. `apiBase`, identifiants de l'appareil et de l'organisation, curseur de synchronisation sont dans MMKV `stockly-org`. Associer le téléphone à une **autre** organisation alors que des données de la précédente existent demande une confirmation : le nouveau jeton n'est enregistré qu'après « Remplacer » (« Annuler » garde l'ancienne association telle quelle) et la synchronisation attend pendant la question. Une migration du stock local en attente bloque l'association à une autre organisation (annulez-la d'abord). Les opérations non envoyées de l'ancienne organisation restent visibles (« Autre organisation »), ne sont jamais envoyées et peuvent seulement être abandonnées.
+
+### Espaces de travail
+
+- Une fois associé, une pastille en haut de l'accueil (« Mon stock ▾ ») et de l'accueil Storo (« <Organisation> ▾ ») permet de passer d'un espace à l'autre : « Mon stock (local) » et « <Organisation> (Storo) », avec « (lecture seule) » ou « (archivé) » le cas échéant. L'application rouvre au lancement le dernier espace utilisé.
+- **Espace organisation** (`app/storo/*`) : choix du site, « Mes comptages » (comptages ouverts dont le téléphone — son membre attribué — est responsable ou membre), puis « Autres comptages ouverts », Entrée / Sortie (scanner), articles du site (lecture seule : les articles se créent et se modifient dans Storo), carte de synchronisation (« Synchroniser », « Opérations »), réglages (`app/storo/settings.tsx`).
+- Les deux espaces ne se mélangent jamais : les mouvements et comptages de « Mon stock » ne sont jamais envoyés à Storo, et l'espace organisation n'écrit jamais dans « Mon stock ».
+
+### Comptages et Entrées / Sorties Storo
+
+- **Comptage** (`app/storo/take/[id].tsx`) : articles du site du comptage, triés par nom ; comptage **à l'aveugle** (le stock Storo n'est pas affiché). « Valider » enregistre la quantité, « Passer » n'envoie rien. Une nouvelle saisie d'un article pas encore envoyé remplace la précédente ; une fois envoyée, une nouvelle saisie s'ajoute dans Storo (« Déjà envoyé : une nouvelle saisie sera ajoutée dans Storo. ») et un responsable annule la mauvaise. Un comptage clôturé dans Storo reste visible en lecture seule (« Clôturé dans Storo ») tant qu'il a des saisies locales. Les numéros de série / IMEI ne sont pas synchronisés dans cette version.
+- **Entrée / Sortie** (`app/storo/move.tsx`) : quantité entière ≥ 1, envoyée comme mouvement `reception` (+n) ou `sortie` (−n). Le stock affiché = stock Storo connu + mouvements pas encore envoyés ; une Sortie supérieure est refusée (« Stock insuffisant. Disponible : N. »).
+- Un téléphone **sans membre attribué** dans Storo peut compter hors ligne, mais les saisies sont refusées par Storo et mises de côté jusqu'à son attribution (bandeau), puis renvoyées automatiquement.
+
+### Synchronisation (`data/storo/sync.ts`)
+
+- **Hors ligne d'abord** : chaque opération est écrite dans la file d'envoi (`v1.org.outbox`) avec un identifiant client unique (`<appareil>:ce:<comptage>:<article>:<révision>` ou `<appareil>:mv:<id>`) avant d'être confirmée à l'écran ; un renvoi (réponse perdue, nouvel essai) n'est donc jamais enregistré deux fois par Storo. 5000 opérations en attente au plus.
+- **Cycle** : `/device/me` (au plus tous les quarts d'heure), migration en cours, envoi (`/sync/push`, par lots de 200 comptages et 50 mouvements), puis lecture des changements (`/sync/pull` des sites, comptages ouverts et articles, avec curseur, page après page). Un seul cycle à la fois.
+- **Déclencheurs** : lancement de l'application, retour au premier plan, retour du réseau (**NetInfo**), toutes les 60 s sur l'accueil Storo et 30 s pendant un comptage, 2 s après chaque opération, bouton « Synchroniser ». Présence (`/device/heartbeat`) au lancement et toutes les 5 min.
+- **Erreurs réseau, 5xx, 429** : nouvel essai après 5 s, 30 s, 2 min puis 10 min (ou le délai `Retry-After`). Le retour du réseau et le retour au premier plan relancent aussitôt un cycle (l'attente est levée, sauf un `Retry-After` demandé par Storo) ; une minuterie d'une minute, quel que soit l'écran affiché, relance un cycle dès que des opérations sont prêtes à partir ou qu'une attente est écoulée. Une opération refusée par Storo (stock insuffisant, comptage clôturé, article introuvable, téléphone non attribué…) est **mise de côté** et affichée dans « Opérations » (`app/storo/outbox.tsx`) avec le motif : « Réessayer », « Modifier » (mouvements) ou « Abandonner ». Une erreur interne de Storo, ou un conflit passager (« le comptage a changé pendant l'enregistrement »), est réessayé automatiquement (8 fois au plus). Une saisie en cours d'envoi n'est ni remplacée ni retirée par une nouvelle saisie ou « Passer » : elle est enregistrée par Storo et la nouvelle saisie suit, comme après un envoi. Les écritures de la file d'envoi et des comptages passent par un journal (`v1.org.txn`) rejoué au lancement si l'application s'est arrêtée entre deux, et une révision de comptage n'est jamais réutilisée.
+- **Lecture seule** : jeton refusé (401 : téléphone révoqué, dissocié ou réassocié ailleurs) → « Ce téléphone n'est plus associé… » et « Associer à nouveau » ; appareil désactivé, organisation suspendue ou abonnement sans application mobile (403), ou date de fin de l'abonnement mobile passée même hors ligne (« L'abonnement mobile de … a expiré le … ») → bandeau et nouvelle vérification au premier plan, au retour du réseau et toutes les 15 min. La file d'envoi n'est jamais effacée par un changement d'état.
+- **Dissocier** (réglages Storo) supprime le jeton du téléphone (sans le révoquer dans Storo) et garde données et opérations, envoyées après une nouvelle association à la même organisation. **Effacer les données Storo** (seulement hors connexion active) efface l'espace organisation, sauf l'archive du stock local.
+
+## Migrer vers Storo
+
+Pour passer d'un usage autonome à Storo sans ressaisir le stock (Profil › Storo › « Migrer mon stock vers Storo », `app/storo/migrate.tsx`, `data/storo/migration.ts`) :
+
+1. **Aperçu** : nombre d'articles et d'unités en stock. Sont envoyés, pour chaque article : nom, SKU, code-barres, dossier, stock minimum, prix unitaire et quantité. **Les numéros de série et IMEI ne sont pas transférés dans cette version** (seule la quantité en stock des articles suivis par numéro de série l'est). Ni photos, ni mouvements, ni comptages. 1000 articles au plus par transfert. Stockly Pro n'est pas nécessaire.
+2. **Envoi** : le contenu est construit une fois, enregistré sur le téléphone, puis envoyé ; en cas de coupure il est renvoyé à l'identique. La migration est alors **en attente** : un responsable la valide dans Storo (choix du site, rapprochement des articles déjà présents par SKU ou code-barres : lier ou créer, et pour un article lié, garder le stock Storo ou prendre celui du téléphone). **Pendant l'attente, « Mon stock » est en lecture seule** (toutes les modifications sont refusées avec un message, y compris l'import Excel, la restauration d'une sauvegarde, les données d'exemple et la réinitialisation ; consultation, sauvegarde et exports restent possibles) ; « Annuler la migration » le rend de nouveau modifiable (si la réponse à l'envoi n'est jamais arrivée, l'envoi est d'abord renvoyé à l'identique puis annulé dans Storo : il faut donc une connexion). Sans décision sous 14 jours, la migration expire. Si la connexion à Storo passe en lecture seule (téléphone dissocié ou désactivé, abonnement sans application mobile) ou si les 14 jours sont écoulés, la migration est **suspendue** : « Mon stock » redevient modifiable, la migration est revérifiée au retour de la connexion (si elle est alors validée, le stock local est archivé tel qu'il est à ce moment-là), et « Abandonner sur ce téléphone » permet de l'oublier (la copie dans Storo, si elle attend encore, est à rejeter par un responsable ; la file d'envoi est conservée). Une migration n'est jamais envoyée ni suivie dans une autre organisation que celle pour laquelle elle a été préparée.
+3. **Validée** : le téléphone reçoit la correspondance article local → article Storo, passe dans l'espace organisation sur le site choisi et affiche « Transfert terminé : X créés, Y liés, Z ignorés » avec le détail. **« Mon stock » n'est jamais effacé** : il est archivé (lecture seule, toujours consultable depuis la pastille « Mon stock (archivé) »). Réglages Storo › « Réactiver le stock local » le rend de nouveau modifiable (ses modifications ne vont pas dans Storo).
+4. **Refusée, expirée ou annulée** : « Mon stock » redevient modifiable ; « Recommencer » prépare un nouvel envoi.
+
 ## Stack
 
 - **Expo SDK 58**, React Native 0.88, React 19, nouvelle architecture activée
 - **expo-router** (routes basées sur les fichiers, routes typées)
 - **expo-camera** pour le scan, **expo-image-picker** + **expo-file-system** pour les photos d'articles, **expo-location** pour la géolocalisation
 - **expo-document-picker** (choix du fichier à importer) et **fflate** (décompression des .xlsx, pur JavaScript)
+- **expo-secure-store** (jeton Storo, code du téléphone) et **@react-native-community/netinfo** (synchronisation Storo au retour du réseau)
+- **vitest** pour les tests des modules purs (`data/**/*.test.ts`)
 - **expo-updates** pour les mises à jour OTA (EAS Update, `runtimeVersion` basé sur le *fingerprint*)
 - Gestionnaire de paquets : **pnpm** (`pnpm-lock.yaml`)
 
@@ -264,13 +311,17 @@ pnpm license:issue --company "Ets Diallo" --phone 0W3G-E1R7-0W3G-E1RS --expires 
 pnpm install
 npx expo install --check   # vérifie que les versions correspondent au SDK
 npx expo start
+pnpm test                  # tests (vitest, Node) des modules purs de data/ : Storo (client, erreurs, session, file d'envoi, synchronisation, migration), garde du stock local, règle de licence
+npx tsc --noEmit -p .      # vérification des types
 ```
 
 ## Structure
 
 ```
 app/
-  _layout.tsx          Stack racine
+  _layout.tsx          Stack racine (démarre la synchronisation Storo, rouvre le dernier espace)
+  storo/               Espace organisation (Storo) : accueil, connexion (code / QR), articles du site, Entrée / Sortie,
+                       comptage d'un inventaire (take/[id]), opérations à envoyer, migration, réglages
   (tabs)/              Onglets : Accueil, Articles, Scanner, Tâches, Profil
   scan.tsx             Scanner plein écran (Entrée / Sortie, appareils, comptage, saisie manuelle)
   article/new.tsx      Création d'un article
@@ -300,6 +351,13 @@ data/backupFile.ts     Sauvegarde / restauration : partage du fichier et choix d
 data/licenseCode.ts    Licence Pro : code téléphone, code d'activation signé Ed25519 (module pur, partagé avec le script)
 data/license.ts        Licence Pro : stockage (SecureStore + MMKV), vérification au lancement, limites gratuites
 components/ProNotice.tsx Encart / alerte « Stockly Pro » avec lien vers Profil › Stockly Pro
+components/storo/      Pastille de choix de l'espace de travail, bandeaux Storo (lecture seule, opérations refusées…)
+constants/storo.ts     Storo : serveur par défaut, délais, limites, attentes entre essais
+data/storo/            Storo (modules purs sauf native.ts et useStoro.ts) : kv (stockage injecté), client (HTTP),
+                       errors (classement, messages), session (association, jeton, états), orgStore (données de
+                       l'organisation), outbox (file d'envoi), mapping (correspondances), sync (cycle, déclencheurs),
+                       migration (transfert du stock local), native (MMKV stockly-org, SecureStore, NetInfo, AppState),
+                       useStoro (hooks React) ; tests dans data/storo/__tests__/
 scripts/license.mjs    Outil du propriétaire : keygen, issue (non inclus dans l'application)
 data/photos.ts         Photos des articles (appareil photo / galerie, fichiers locaux)
 assets/images/         Icône, icône adaptative, splash, favicon
@@ -336,7 +394,8 @@ npx expo config --json > /dev/null   # vérification rapide
 
 ## À faire
 
-- Inclure les photos dans la sauvegarde (archive ZIP, version 2 du format) ; aucune synchronisation serveur pour l'instant.
+- Inclure les photos dans la sauvegarde (archive ZIP, version 2 du format).
+- Storo : synchroniser les numéros de série / IMEI (non transférés ni synchronisés en v1) ; tester l'association et la synchronisation sur un téléphone réel face au serveur Storo.
 - Remplacer les icônes provisoires de `assets/images/` par les visuels définitifs.
 - Le code-barres affiché sur la fiche détail est décoratif ; utilisez `react-native-svg` avec une bibliothèque de codes-barres pour un vrai rendu.
 - Sentry : `@sentry/react-native` et son plugin sont installés, mais le SDK n'est pas encore initialisé. Ajoutez `Sentry.init({ dsn: '…' })` dans `app/_layout.tsx`, un `metro.config.js` basé sur `getSentryExpoConfig`, et le secret `SENTRY_AUTH_TOKEN` dans EAS pour l'envoi des source maps.
