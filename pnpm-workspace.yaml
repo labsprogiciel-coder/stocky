@@ -9,3 +9,13 @@ onlyBuiltDependencies:
 # packages from the project root, which pnpm's default isolated node_modules
 # hides. Use a flat, npm-style node_modules instead.
 nodeLinker: hoisted
+
+# Same supply-chain policy as EAS Build (pnpm 11 default): never resolve a
+# version published less than a day ago, so a local install cannot write a
+# lockfile that EAS then rejects (ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION).
+minimumReleaseAge: 1440
+
+# postcss 8.5.34 (via vitest > vite) was published on 2026-11-27, inside the
+# policy above: pin vite's copy to 8.5.33 (vite needs ^8.5.33).
+overrides:
+  "vite>postcss": "8.5.33"
