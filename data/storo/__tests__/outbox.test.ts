@@ -187,6 +187,25 @@ describe('parked rows', () => {
     expect(env.outbox.countStatus('t1', 'i1')).toBe('À compter');
   });
 
+  it('never reuses a client id after a lost response, a recount and a discard', async () => {
+    const env = await ready();
+    // Révision 1 enregistrée par Storo, mais la réponse est perdue : la ligne reste en attente.
+    env.outbox.recordCount('t1', 'i1', 5, 'Compté');
+    const rev1 = env.orgStore.getOutboxRows()[0].clientId;
+    // Nouvelle saisie avant le renvoi : révision 2, refusée puis abandonnée.
+    env.outbox.recordCount('t1', 'i1', 7, 'Compté');
+    const b = env.outbox.chunkRows(env.orgStore.getOutboxRows())[0];
+    const rev2 = b.countEntries[0].clientId;
+    env.outbox.applyPushResults(b, { countEntries: [{ clientId: rev2, status: 'error', error: { code: 'CONFLICT', details: { reason: 'stock_take_closed' } } }] }, T0);
+    expect(env.outbox.discardRow(rev2)).toBeNull();
+    expect(env.orgStore.getCount('t1')?.entries.i1).toBeUndefined();
+    // La saisie suivante prend une révision jamais émise (ni 1 ni 2).
+    expect(env.outbox.recordCount('t1', 'i1', 9, 'Compté')).toBeNull();
+    const next = env.orgStore.getOutboxRows().find((r) => r.kind === 'count')!;
+    expect([rev1, rev2]).not.toContain(next.clientId);
+    expect(next.ref?.rev).toBe(3);
+  });
+
   it('no_attributed_member rows go back to pending', async () => {
     const env = await ready();
     env.outbox.recordCount('t1', 'i1', 5, 'Compté');

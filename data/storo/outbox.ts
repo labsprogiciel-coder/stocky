@@ -192,7 +192,8 @@ export function recordCount(takeId: string, itemId: string, qty: number, status:
     if (nextRows.length >= OUTBOX_CAP) return OUTBOX_FULL;
     // Révision jamais réutilisée (même identifiant client = autre quantité refusée par Storo).
     const known = rowsOf(rows, takeId, itemId).reduce((n, r) => Math.max(n, r.ref?.rev ?? 0), 0);
-    const rev = Math.max(prev?.rev ?? 0, prev?.sentRev ?? 0, known) + 1;
+    const issued = count.issuedRev?.[itemId];
+    const rev = Math.max(prev?.rev ?? 0, prev?.sentRev ?? 0, known, typeof issued === 'number' ? issued : 0) + 1;
     entry = { qty, status: 'Compté', rev, capturedAt: ts, ...(prev?.sentRev !== undefined ? { sentRev: prev.sentRev, sentQty: prev.sentQty ?? 0 } : {}) };
     const clientId = countClientId(w.deviceId, takeId, itemId, rev);
     const body = countEntryBody({ clientId, takeId, item: t.item, qty, capturedAt: ts, serverOffsetMs: getSyncMeta().serverOffsetMs, now: ts });
@@ -209,7 +210,9 @@ export function recordCount(takeId: string, itemId: string, qty: number, status:
       ref: { takeId, itemId, rev },
     }];
   }
-  const nextCounts = { ...counts, [takeId]: { ...count, entries: { ...count.entries, [itemId]: entry } } };
+  const issuedRev = entry.status === 'Compté' ? { ...(count.issuedRev ?? {}), [itemId]: Math.max(count.issuedRev?.[itemId] ?? 0, entry.rev) } : count.issuedRev;
+  const nextCount: OrgCount = { ...count, entries: { ...count.entries, [itemId]: entry }, ...(issuedRev ? { issuedRev } : {}) };
+  const nextCounts = { ...counts, [takeId]: nextCount };
   if (!commitOutbox(nextRows, { counts: nextCounts })) return SAVE_ERROR;
   if (status === 'Compté') notifyEnqueued();
   return null;
@@ -232,7 +235,9 @@ export function discardRow(clientId: string): string | null {
       const entries = { ...c.entries };
       if (e.sentRev !== undefined) entries[row.ref.itemId] = { qty: e.sentQty ?? 0, status: 'Compté', rev: e.sentRev, sentRev: e.sentRev, sentQty: e.sentQty ?? 0, capturedAt: e.capturedAt };
       else delete entries[row.ref.itemId];
-      counts = { ...all, [row.ref.takeId]: { ...c, entries } };
+      // La révision abandonnée reste émise : la prochaine saisie prend un nouvel identifiant.
+      const issuedRev = { ...(c.issuedRev ?? {}), [row.ref.itemId]: Math.max(c.issuedRev?.[row.ref.itemId] ?? 0, row.ref.rev) };
+      counts = { ...all, [row.ref.takeId]: { ...c, entries, issuedRev } };
     }
   }
   return commitOutbox(nextRows, counts ? { counts } : {}) ? null : SAVE_ERROR;

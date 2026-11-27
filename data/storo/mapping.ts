@@ -61,6 +61,12 @@ export type OrgCount = {
   idx: number;
   startedAt: number;
   entries: Record<string /* storoItemId */, OrgCountEntry>;
+  /**
+   * Plus haute révision émise par article (identifiant client déjà utilisé),
+   * conservée quand une saisie est abandonnée : un identifiant n'est jamais
+   * réutilisé, même si Storo l'a enregistré sans que la réponse arrive.
+   */
+  issuedRev?: Record<string /* storoItemId */, number>;
 };
 
 // ── Lignes de /sync/push (§8.1, §8.2) ──────────────────────────────────────
