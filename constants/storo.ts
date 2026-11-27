@@ -8,10 +8,10 @@
  */
 
 /** Serveur Storo utilisé pour l'association par code (OTP), sauf configuration `app.json`. */
-export const DEFAULT_STORO_API_BASE = 'https://storo-preview.labsprogiciel.workers.dev/api/v1';
+export const DEFAULT_STORO_API_BASE = 'https://storo.labsprogiciel.workers.dev/api/v1';
 
 /** Hôtes acceptés dans un QR code d'association (le QR fournit lui-même son `apiBase`). */
-export const DEFAULT_STORO_ALLOWED_HOSTS: readonly string[] = ['storo-preview.labsprogiciel.workers.dev'];
+export const DEFAULT_STORO_ALLOWED_HOSTS: readonly string[] = ['storo.labsprogiciel.workers.dev', 'storo-preview.labsprogiciel.workers.dev'];
 
 export const REQUEST_TIMEOUT_MS = 20_000;
 export const MIGRATION_TIMEOUT_MS = 60_000;
